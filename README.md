@@ -184,11 +184,14 @@ llm = llama.Llama(
     n_batch=512,
     n_threads=None,
     n_gpu_layers=0,
+    n_ubatch=None,
+    n_threads_batch=None,
     seed=-1,
     use_mmap=True,
     use_mlock=False,
     verbose=False,
     embedding=False,
+    flash_attn_type=None,
 )
 
 text = llm.generate(
@@ -199,8 +202,10 @@ text = llm.generate(
     top_p=0.95,
     min_p=0.05,
     repeat_penalty=1.1,
+    repeat_last_n=64,
     stop_sequences=None,
     stream=False,
+    seed=None,
 )
 
 stream = llm.generate(
@@ -209,13 +214,21 @@ stream = llm.generate(
     stream=True,
 )
 
-tokens = llm.tokenize("Hello")
-text = llm.detokenize(tokens)
+tokens = llm.tokenize("Hello", add_special=True, parse_special=False)
+text = llm.detokenize(tokens, remove_special=False, unparse_special=True)
 piece = llm.token_to_piece(tokens[0])
 
 llm.get_model_desc()
 llm.get_model_size()
 llm.get_model_n_params()
+
+# Properties
+llm.n_vocab
+llm.n_ctx
+llm.n_embd
+llm.n_layer
+llm.bos_token
+llm.eos_token
 
 # Embeddings (requires embedding=True)
 emb = llm.get_embeddings("Hello")
@@ -323,17 +336,20 @@ class Llama:
     def __init__(
         self,
         model_path: str,
-        n_ctx: int = 512,           # Context window size
-        n_batch: int = 512,         # Batch size for prompt processing
-        n_threads: int = None,      # CPU threads (auto-detect if None)
-        n_gpu_layers: int = 0,      # Layers to offload to GPU
-        seed: int = -1,             # Random seed (-1 for random)
-        use_mmap: bool = True,      # Memory map model file
-        use_mlock: bool = False,    # Lock model in RAM
-        verbose: bool = False,      # Print loading info
-        embedding: bool = False,    # Enable embedding mode
+        n_ctx: int = 512,                   # Context window size
+        n_batch: int = 512,                 # Logical max batch size for prompt processing
+        n_threads: int = None,              # CPU threads (auto-detect if None)
+        n_gpu_layers: int = 0,              # Layers to offload to GPU
+        n_ubatch: int = None,               # Physical microbatch size (defaults to n_batch)
+        n_threads_batch: int = None,        # Threads for batch processing (defaults to n_threads)
+        seed: int = -1,                     # Random seed (-1 for random)
+        use_mmap: bool = True,              # Memory map model file
+        use_mlock: bool = False,            # Lock model in RAM
+        verbose: bool = False,              # Print loading info
+        embedding: bool = False,            # Enable embedding mode
+        flash_attn_type: int = None,        # Flash attention type (None = use env var)
     ): ...
-    
+
     def generate(
         self,
         prompt: str,
@@ -343,14 +359,28 @@ class Llama:
         top_p: float = 0.95,
         min_p: float = 0.05,
         repeat_penalty: float = 1.1,
+        repeat_last_n: int = 64,
         stop_sequences: List[str] = None,
         stream: bool = False,
+        seed: int = None,
     ) -> Union[str, Iterator[str]]: ...
-    
-    def tokenize(self, text: str, add_special: bool = True) -> List[int]: ...
-    def detokenize(self, tokens: List[int]) -> str: ...
+
+    def tokenize(self, text: str, add_special: bool = True, parse_special: bool = False) -> List[int]: ...
+    def detokenize(self, tokens: List[int], remove_special: bool = False, unparse_special: bool = True) -> str: ...
+    def token_to_piece(self, token: int) -> str: ...
     def get_embeddings(self, text: str) -> List[float]: ...
+    def get_model_desc(self) -> str: ...
+    def get_model_size(self) -> int: ...
+    def get_model_n_params(self) -> int: ...
     def close(self): ...
+
+    # Properties
+    n_vocab: int
+    n_ctx: int
+    n_embd: int
+    n_layer: int
+    bos_token: int
+    eos_token: int
 ```
 
 ### Backend Functions
@@ -370,7 +400,6 @@ def is_blas_available() -> bool: ...
 ```python
 def get_embeddings(model: Union[str, Llama], text: str) -> List[float]: ...
 def get_embeddings_batch(model: Union[str, Llama], texts: List[str]) -> List[List[float]]: ...
-def cosine_similarity(a: List[float], b: List[float]) -> float: ...
 ```
 
 ## Examples

@@ -2,17 +2,6 @@
 
 **Auto-synchronized Python bindings for llama.cpp**
 
-## Supported Backends
-
-| Backend | Platform(s)         | Notes                |
-|---------|---------------------|----------------------|
-| CPU     | All                 | Default PyPI wheel   |
-| CUDA    | Linux, Windows      | CUDA 12.4            |
-| Metal   | macOS (Apple Silicon) | MPS/Metal support |
-| Vulkan  | All                 | Experimental         |
-
-CPU wheels are published to PyPI. Backend-specific wheels (CUDA, Metal, Vulkan) are published to GitHub Releases.
-
 [![Build Wheels](https://github.com/FarisZahrani/llama-cpp-py-sync/actions/workflows/build.yml/badge.svg)](https://github.com/FarisZahrani/llama-cpp-py-sync/actions/workflows/build.yml)
 [![Sync Upstream](https://github.com/FarisZahrani/llama-cpp-py-sync/actions/workflows/sync.yml/badge.svg)](https://github.com/FarisZahrani/llama-cpp-py-sync/actions/workflows/sync.yml)
 [![Tests](https://github.com/FarisZahrani/llama-cpp-py-sync/actions/workflows/test.yml/badge.svg)](https://github.com/FarisZahrani/llama-cpp-py-sync/actions/workflows/test.yml)
@@ -28,7 +17,7 @@ CPU wheels are published to PyPI. Backend-specific wheels (CUDA, Metal, Vulkan) 
 - Automatic upstream sync and binding regeneration
 - Prebuilt wheels built by CI
 - CPU wheels published to PyPI
-- Backend-specific wheels (CUDA / Vulkan / Metal) published to GitHub Releases
+- Backend-specific wheels published to GitHub Releases: Linux CUDA (12.2) and Vulkan, Windows CUDA (12.4) and Vulkan, macOS Apple Silicon Metal
 - CI checks that the generated CFFI surface matches the upstream C API (functions, structs, enums, and signatures)
 - A small, explicit Python API (`Llama.generate`, `tokenize`, `get_embeddings`, etc.)
 

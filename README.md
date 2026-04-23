@@ -2,6 +2,17 @@
 
 **Auto-synchronized Python bindings for llama.cpp**
 
+## Supported Backends
+
+| Backend | Platform(s)         | Notes                |
+|---------|---------------------|----------------------|
+| CPU     | All                 | Default PyPI wheel   |
+| CUDA    | Linux, Windows      | CUDA 12.4            |
+| Metal   | macOS (Apple Silicon) | MPS/Metal support |
+| Vulkan  | All                 | Experimental         |
+
+CPU wheels are published to PyPI. Backend-specific wheels (CUDA, Metal, Vulkan) are published to GitHub Releases.
+
 [![Build Wheels](https://github.com/FarisZahrani/llama-cpp-py-sync/actions/workflows/build.yml/badge.svg)](https://github.com/FarisZahrani/llama-cpp-py-sync/actions/workflows/build.yml)
 [![Sync Upstream](https://github.com/FarisZahrani/llama-cpp-py-sync/actions/workflows/sync.yml/badge.svg)](https://github.com/FarisZahrani/llama-cpp-py-sync/actions/workflows/sync.yml)
 [![Tests](https://github.com/FarisZahrani/llama-cpp-py-sync/actions/workflows/test.yml/badge.svg)](https://github.com/FarisZahrani/llama-cpp-py-sync/actions/workflows/test.yml)

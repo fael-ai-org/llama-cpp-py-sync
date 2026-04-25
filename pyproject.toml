@@ -37,7 +37,6 @@ classifiers = [
     "Operating System :: Microsoft :: Windows",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: Implementation :: CPython",
-    "Programming Language :: Python :: 3.8",
     "Programming Language :: Python :: 3.9",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
@@ -46,7 +45,7 @@ classifiers = [
     "Programming Language :: Python :: 3.14",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
-requires-python = ">=3.8"
+requires-python = ">=3.9"
 dependencies = [
     "cffi>=1.15.0",
     "certifi>=2023.7.22",
@@ -105,11 +104,11 @@ gguf = [
 
 [tool.black]
 line-length = 100
-target-version = ["py38", "py39", "py310", "py311", "py312", "py313", "py314"]
+target-version = ["py39", "py310", "py311", "py312", "py313", "py314"]
 
 [tool.ruff]
 line-length = 100
-target-version = "py38"
+target-version = "py39"
 exclude = ["src/gguf"]
 
 [tool.ruff.lint]
@@ -123,7 +122,7 @@ ignore = ["E501"]
 "src/llama_cpp_py_sync/convert_lora_to_gguf.py" = ["ALL"]
 
 [tool.mypy]
-python_version = "3.8"
+python_version = "3.9"
 warn_return_any = true
 warn_unused_configs = true
 ignore_missing_imports = true
@@ -135,4 +134,4 @@ python_functions = ["test_*"]
 
 [tool.llama_cpp_py_sync.ci]
 build_python = "3.13.13"
-test_pythons = ["3.8", "3.9", "3.10", "3.11", "3.12", "3.13", "3.14"]
+test_pythons = ["3.9", "3.10", "3.11", "3.12", "3.13", "3.14"]

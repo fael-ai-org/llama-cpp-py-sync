@@ -13,7 +13,7 @@ import re
 import shutil
 from datetime import datetime
 from pathlib import Path
-from typing import List, Optional
+from typing import Optional
 
 API_HEADER_NAMES = ("gguf.h", "llama.h")
 CONVERTER_SCRIPT_NAME = "convert_hf_to_gguf.py"
@@ -180,7 +180,7 @@ def preprocess_header(content: str) -> str:
     return content
 
 
-def extract_enums(content: str) -> List[str]:
+def extract_enums(content: str) -> list[str]:
     """Extract enum definitions from header content."""
     enums: list[str] = []
 
@@ -245,9 +245,9 @@ def extract_named_struct_decls_map(content: str) -> dict[str, str]:
     return out
 
 
-def extract_structs(content: str) -> List[str]:
+def extract_structs(content: str) -> list[str]:
     """Extract struct definitions from header content."""
-    structs: List[str] = []
+    structs: list[str] = []
 
     i = 0
     needle = "typedef struct"
@@ -303,9 +303,9 @@ def extract_structs(content: str) -> List[str]:
     return structs
 
 
-def extract_named_struct_decls(content: str) -> List[str]:
+def extract_named_struct_decls(content: str) -> list[str]:
     """Extract `struct name { ... };` declarations from header content."""
-    structs: List[str] = []
+    structs: list[str] = []
 
     for m in re.finditer(r"\bstruct\s+([A-Za-z_][A-Za-z0-9_]*)\s*\{", content):
         struct_name = m.group(1)
@@ -350,9 +350,9 @@ def extract_named_struct_decls(content: str) -> List[str]:
     return structs
 
 
-def extract_typedefs(content: str) -> List[str]:
+def extract_typedefs(content: str) -> list[str]:
     """Extract non-struct typedef statements from header content."""
-    typedefs: List[str] = []
+    typedefs: list[str] = []
 
     # Include typedefs that reference structs (e.g. `typedef struct foo * foo_t;` or
     # `typedef struct foo (*cb_t)(...);`) but exclude typedefs that contain an inline
@@ -384,7 +384,7 @@ def _typedef_name(typedef_stmt: str) -> Optional[str]:
     return None
 
 
-def extract_functions(content: str) -> List[str]:
+def extract_functions(content: str) -> list[str]:
     """Extract function declarations from header content."""
     functions = []
 

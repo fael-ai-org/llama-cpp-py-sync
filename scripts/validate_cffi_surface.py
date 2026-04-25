@@ -18,9 +18,9 @@ import json
 import os
 import platform
 import re
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable
 
 _IDENT_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 _API_MACROS = ("LLAMA_API", "GGML_API")

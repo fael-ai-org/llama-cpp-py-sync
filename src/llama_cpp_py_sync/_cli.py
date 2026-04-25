@@ -5,7 +5,7 @@ import ssl
 import sys
 import urllib.request
 from pathlib import Path
-from typing import List, Optional
+from typing import Optional
 
 _DEFAULT_MODEL_URL = (
     "https://huggingface.co/bartowski/Llama-3.2-3B-Instruct-GGUF/resolve/main/"
@@ -230,7 +230,7 @@ def _chat(args: argparse.Namespace) -> int:
     return 0
 
 
-def _run_module_main(module_name: str, argv: List[str]) -> int:
+def _run_module_main(module_name: str, argv: list[str]) -> int:
     forwarded_argv = list(argv)
     if forwarded_argv and forwarded_argv[0] == "--":
         forwarded_argv = forwarded_argv[1:]
@@ -314,7 +314,7 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def main(argv: Optional[List[str]] = None) -> int:
+def main(argv: Optional[list[str]] = None) -> int:
     converter_modules = {
         "convert-hf-to-gguf": "llama_cpp_py_sync.convert_hf_to_gguf",
         "convert-lora-to-gguf": "llama_cpp_py_sync.convert_lora_to_gguf",

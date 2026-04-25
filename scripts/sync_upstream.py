@@ -13,7 +13,7 @@ import subprocess
 import sys
 from datetime import datetime
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Optional
 
 UPSTREAM_REPO = "https://github.com/ggml-org/llama.cpp.git"
 VENDOR_DIR = "vendor/llama.cpp"
@@ -25,7 +25,7 @@ def get_project_root() -> Path:
     return Path(__file__).parent.parent.resolve()
 
 
-def run_git_command(args: list, cwd: Optional[Path] = None) -> Tuple[int, str, str]:
+def run_git_command(args: list, cwd: Optional[Path] = None) -> tuple[int, str, str]:
     """Run a git command and return (returncode, stdout, stderr)."""
     try:
         result = subprocess.run(
@@ -134,7 +134,7 @@ def update_upstream(vendor_path: Path) -> bool:
     return True
 
 
-def check_update_needed(project_root: Path) -> Tuple[bool, Optional[str], Optional[str]]:
+def check_update_needed(project_root: Path) -> tuple[bool, Optional[str], Optional[str]]:
     """
     Check if an update is needed.
 

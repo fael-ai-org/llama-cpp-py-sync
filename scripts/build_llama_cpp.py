@@ -15,7 +15,7 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Optional
 
 _HOMEBREW_INSTALL_URL = "https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh"
 
@@ -32,9 +32,9 @@ def _copy_runtime_dll(src: Path, dst_dir: Path) -> bool:
 
 
 def _copy_msvc_openmp_runtimes(package_dir: Path) -> int:
-    candidates: List[Path] = []
+    candidates: list[Path] = []
 
-    vs_roots: List[Path] = []
+    vs_roots: list[Path] = []
     for env_key in ["VCToolsInstallDir", "VCINSTALLDIR", "VSINSTALLDIR", "VSCMD_ARG_VCVARS"]:
         val = os.environ.get(env_key)
         if val:
@@ -306,7 +306,7 @@ def _copy_linux_cuda_runtime_sos(package_dir: Path) -> int:
 
 def _bundle_linux_runtime_sos(
     package_dir: Path,
-    backends: Dict[str, Tuple[bool, Optional[str]]],
+    backends: dict[str, tuple[bool, Optional[str]]],
     enable_cuda: bool,
 ) -> None:
     cuda_count = 0
@@ -327,7 +327,7 @@ def _bundle_linux_runtime_sos(
 
 def _bundle_windows_runtime_dlls(
     package_dir: Path,
-    backends: Dict[str, Tuple[bool, Optional[str]]],
+    backends: dict[str, tuple[bool, Optional[str]]],
     enable_cuda: bool,
     enable_vulkan: bool,
 ) -> None:
@@ -658,7 +658,7 @@ def _require_build_tools(*, auto_install_macos_deps: bool = False) -> None:
             )
 
 
-def detect_cuda() -> Tuple[bool, Optional[str]]:
+def detect_cuda() -> tuple[bool, Optional[str]]:
     """Detect if CUDA is available and return version."""
     cuda_home = os.environ.get("CUDA_HOME") or os.environ.get("CUDA_PATH")
 
@@ -682,7 +682,7 @@ def detect_cuda() -> Tuple[bool, Optional[str]]:
     return False, None
 
 
-def detect_rocm() -> Tuple[bool, Optional[str]]:
+def detect_rocm() -> tuple[bool, Optional[str]]:
     """Detect if ROCm is available."""
     rocm_path = os.environ.get("ROCM_PATH", "/opt/rocm")
 
@@ -700,7 +700,7 @@ def detect_rocm() -> Tuple[bool, Optional[str]]:
     return False, None
 
 
-def detect_vulkan() -> Tuple[bool, Optional[str]]:
+def detect_vulkan() -> tuple[bool, Optional[str]]:
     """Detect if Vulkan SDK is available."""
     vulkan_sdk = os.environ.get("VULKAN_SDK")
 
@@ -714,7 +714,7 @@ def detect_vulkan() -> Tuple[bool, Optional[str]]:
     return False, None
 
 
-def detect_metal() -> Tuple[bool, Optional[str]]:
+def detect_metal() -> tuple[bool, Optional[str]]:
     """Detect if Metal is available (macOS only)."""
     if platform.system() != "Darwin":
         return False, None
@@ -733,7 +733,7 @@ def detect_metal() -> Tuple[bool, Optional[str]]:
     return False, None
 
 
-def detect_blas() -> Tuple[bool, str]:
+def detect_blas() -> tuple[bool, str]:
     """Detect available BLAS implementation."""
     if platform.system() == "Darwin":
         return True, "accelerate"
@@ -754,7 +754,7 @@ def detect_blas() -> Tuple[bool, str]:
     return False, "none"
 
 
-def detect_backends() -> Dict[str, Tuple[bool, Optional[str]]]:
+def detect_backends() -> dict[str, tuple[bool, Optional[str]]]:
     """Detect all available backends."""
     return {
         "cuda": detect_cuda(),
@@ -766,13 +766,13 @@ def detect_backends() -> Dict[str, Tuple[bool, Optional[str]]]:
 
 
 def get_cmake_args(
-    backends: Dict[str, Tuple[bool, Optional[str]]],
+    backends: dict[str, tuple[bool, Optional[str]]],
     enable_cuda: bool = True,
     enable_rocm: bool = True,
     enable_vulkan: bool = True,
     enable_metal: bool = True,
     enable_blas: bool = True,
-) -> List[str]:
+) -> list[str]:
     """Get CMake configuration arguments based on detected backends."""
     args = [
         "-DCMAKE_BUILD_TYPE=Release",
@@ -844,7 +844,7 @@ def get_cmake_args(
 def run_cmake_configure(
     source_dir: Path,
     build_dir: Path,
-    cmake_args: List[str],
+    cmake_args: list[str],
     *,
     auto_install_macos_deps: bool = False,
 ) -> bool:

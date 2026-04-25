@@ -8,8 +8,8 @@ like loading models, tokenizing text, and generating completions.
 from __future__ import annotations
 
 import os
+from collections.abc import Iterator
 from dataclasses import dataclass, field
-from typing import Iterator
 
 from llama_cpp_py_sync._cffi_bindings import get_ffi, get_lib
 

@@ -89,6 +89,30 @@ Use a specific local model:
 python -m llama_cpp_py_sync chat --model path/to/model.gguf
 ```
 
+### Conversion CLI
+
+The package also bundles the upstream llama.cpp conversion scripts behind the same CLI:
+
+```bash
+python -m llama_cpp_py_sync convert-hf-to-gguf --help
+python -m llama_cpp_py_sync convert-lora-to-gguf --help
+python -m llama_cpp_py_sync convert-llama-ggml-to-gguf --help
+```
+
+These converter commands require additional Python dependencies beyond the base runtime. Install the optional `convert` extra first:
+
+```bash
+pip install "llama-cpp-py-sync[convert]"
+```
+
+Examples:
+
+```bash
+python -m llama_cpp_py_sync convert-hf-to-gguf path/to/model --outfile model-f16.gguf --outtype f16
+python -m llama_cpp_py_sync convert-lora-to-gguf path/to/adapter --outfile adapter-f16.gguf
+python -m llama_cpp_py_sync convert-llama-ggml-to-gguf --input model.bin --output model.gguf
+```
+
 ### From GitHub Releases (Wheel)
 
 Download the wheel for your platform/backend from GitHub Releases and install the `.whl`:
@@ -102,6 +126,9 @@ pip install path/to/llama_cpp_py_sync-*.whl
 ```bash
 git clone https://github.com/FarisZahrani/llama-cpp-py-sync.git
 cd llama-cpp-py-sync
+
+# Optional: install converter dependencies
+pip install -e ".[convert]"
 
 # Sync upstream llama.cpp
 python scripts/sync_upstream.py
@@ -412,9 +439,9 @@ See the `examples/` directory:
 - `backend_info.py` - Check available GPU backends
 - `benchmark.py` - Measure token throughput
 
-## Smoke Test / Chat CLI
+## CLI
 
-This repository includes an interactive smoke test that can run either as a one-shot prompt (CI-friendly) or as a back-and-forth chat.
+This repository includes an interactive chat CLI plus bundled upstream conversion commands.
 
 ```bash
 # Interactive chat (Ctrl+C or blank line to exit)
@@ -425,11 +452,26 @@ python -m llama_cpp_py_sync chat --prompt "Say 'ok'." --max-tokens 16
 
 # Use a specific model
 python -m llama_cpp_py_sync chat --model path/to/model.gguf
+
+# Hugging Face -> GGUF
+python -m llama_cpp_py_sync convert-hf-to-gguf --help
+
+# LoRA -> GGUF
+python -m llama_cpp_py_sync convert-lora-to-gguf --help
+
+# GGML -> GGUF
+python -m llama_cpp_py_sync convert-llama-ggml-to-gguf --help
 ```
 
 By default it uses `LLAMA_MODEL` if set. Otherwise it downloads a default GGUF model and caches it locally.
 
 If the default model is missing, the CLI will prompt before downloading it. To auto-download without prompting, pass `--yes`.
+
+The converter commands require the optional `convert` extra:
+
+```bash
+pip install "llama-cpp-py-sync[convert]"
+```
 
 Model cache location:
 

@@ -1,5 +1,6 @@
 import argparse
 import os
+import runpy
 import ssl
 import sys
 import urllib.request
@@ -229,6 +230,28 @@ def _chat(args: argparse.Namespace) -> int:
     return 0
 
 
+def _run_module_main(module_name: str, argv: List[str]) -> int:
+    forwarded_argv = list(argv)
+    if forwarded_argv and forwarded_argv[0] == "--":
+        forwarded_argv = forwarded_argv[1:]
+
+    old_argv = sys.argv
+    sys.argv = [module_name, *forwarded_argv]
+    try:
+        runpy.run_module(module_name, run_name="__main__")
+        return 0
+    except SystemExit as exc:
+        code = exc.code
+        if code is None:
+            return 0
+        if isinstance(code, int):
+            return code
+        print(code, file=sys.stderr)
+        return 1
+    finally:
+        sys.argv = old_argv
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="python -m llama_cpp_py_sync")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -275,10 +298,33 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     chat.add_argument("--debug", action="store_true", help="Verbose troubleshooting.")
 
+    converters = {
+        "convert-hf-to-gguf": "Delegate to the bundled Hugging Face to GGUF converter.",
+        "convert-lora-to-gguf": "Delegate to the bundled LoRA to GGUF converter.",
+        "convert-llama-ggml-to-gguf": "Delegate to the bundled GGML to GGUF converter.",
+    }
+    for command, help_text in converters.items():
+        converter = sub.add_parser(command, help=help_text, add_help=False)
+        converter.add_argument(
+            "args",
+            nargs=argparse.REMAINDER,
+            help="Arguments passed through to the underlying upstream converter.",
+        )
+
     return parser
 
 
 def main(argv: Optional[List[str]] = None) -> int:
+    converter_modules = {
+        "convert-hf-to-gguf": "llama_cpp_py_sync.convert_hf_to_gguf",
+        "convert-lora-to-gguf": "llama_cpp_py_sync.convert_lora_to_gguf",
+        "convert-llama-ggml-to-gguf": "llama_cpp_py_sync.convert_llama_ggml_to_gguf",
+    }
+
+    argv = list(argv) if argv is not None else sys.argv[1:]
+    if argv and argv[0] in converter_modules:
+        return _run_module_main(converter_modules[argv[0]], argv[1:])
+
     parser = _build_parser()
     args = parser.parse_args(argv)
 

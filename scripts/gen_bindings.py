@@ -1,17 +1,37 @@
 #!/usr/bin/env python3
 """
-Generate CFFI bindings from llama.cpp header files.
+Generate CFFI bindings from llama.cpp public header files.
 
-This script reads the llama.h header file and generates Python CFFI bindings
-automatically. It parses the C declarations and creates a _cffi_bindings.py
-file that can be used to interface with the llama.cpp shared library.
+This script reads the vendored public API headers and generates Python CFFI
+bindings automatically. It parses the C declarations and creates a
+_cffi_bindings.py file that can be used to interface with the llama.cpp shared
+library.
 """
 
 import argparse
 import re
+import shutil
 from datetime import datetime
 from pathlib import Path
 from typing import List, Optional
+
+
+API_HEADER_NAMES = ("gguf.h", "llama.h")
+CONVERTER_SCRIPT_NAME = "convert_hf_to_gguf.py"
+STAGED_CONVERTER_SCRIPTS = (
+    "convert_hf_to_gguf.py",
+    "convert_lora_to_gguf.py",
+    "convert_llama_ggml_to_gguf.py",
+)
+
+STAGED_SCRIPT_REWRITES = {
+    "convert_lora_to_gguf.py": (
+        (
+            "from convert_hf_to_gguf import LazyTorchTensor, ModelBase",
+            "from .convert_hf_to_gguf import LazyTorchTensor, ModelBase",
+        ),
+    ),
+}
 
 
 def get_project_root() -> Path:
@@ -36,6 +56,10 @@ def find_header_files(vendor_path: Path) -> dict:
     ggml_h = vendor_path / "ggml" / "include" / "ggml.h"
     if ggml_h.exists():
         headers["ggml.h"] = ggml_h
+
+    gguf_h = vendor_path / "ggml" / "include" / "gguf.h"
+    if gguf_h.exists():
+        headers["gguf.h"] = gguf_h
 
     ggml_cpu_h = vendor_path / "ggml" / "include" / "ggml-cpu.h"
     if ggml_cpu_h.exists():
@@ -375,6 +399,44 @@ def extract_functions(content: str) -> List[str]:
     return functions
 
 
+def _read_api_header_contents(headers: dict) -> str:
+    """Read and preprocess the public API headers that should be bound fully."""
+    contents: list[str] = []
+
+    for header_name in API_HEADER_NAMES:
+        header_path = headers.get(header_name)
+        if header_path is None or not Path(header_path).exists():
+            continue
+
+        with open(header_path, encoding="utf-8", errors="ignore") as f:
+            contents.append(preprocess_header(f.read()))
+
+    return "\n\n".join(contents)
+
+
+def _sync_converter_assets(project_root: Path, vendor_path: Path) -> None:
+    """Stage upstream converter sources into src/ for packaging."""
+    src_root = project_root / "src"
+    package_root = src_root / "llama_cpp_py_sync"
+
+    for script_name in STAGED_CONVERTER_SCRIPTS:
+        converter_src = vendor_path / script_name
+        if not converter_src.exists():
+            continue
+
+        content = converter_src.read_text(encoding="utf-8")
+        for old_text, new_text in STAGED_SCRIPT_REWRITES.get(script_name, ()): 
+            content = content.replace(old_text, new_text)
+        (package_root / script_name).write_text(content, encoding="utf-8")
+
+    gguf_src = vendor_path / "gguf-py" / "gguf"
+    gguf_dst = src_root / "gguf"
+    if gguf_src.exists():
+        if gguf_dst.exists():
+            shutil.rmtree(gguf_dst)
+        shutil.copytree(gguf_src, gguf_dst)
+
+
 def generate_cdef(headers: dict) -> str:
     """
     Generate CFFI cdef string from header files.
@@ -428,11 +490,12 @@ typedef void * ggml_opt_result_t;
 typedef void * ggml_opt_epoch_callback;
 """)
 
-    if "llama.h" in headers:
-        with open(headers["llama.h"], encoding="utf-8", errors="ignore") as f:
-            content = preprocess_header(f.read())
+    content = _read_api_header_contents(headers)
+    api_header_names = set(API_HEADER_NAMES)
 
-        # Discover ggml-related enums/typedefs referenced by llama.h but defined elsewhere.
+    if content:
+
+        # Discover ggml-related enums/typedefs referenced by the public headers but defined elsewhere.
         used_enum_names = set(re.findall(r"\benum\s+([A-Za-z_][A-Za-z0-9_]*)\b", content))
         defined_enum_names = set(re.findall(r"\benum\s+([A-Za-z_][A-Za-z0-9_]*)\s*\{", content))
         missing_enum_names = used_enum_names - defined_enum_names
@@ -464,7 +527,7 @@ typedef void * ggml_opt_epoch_callback;
         if missing_enum_names:
             extra_enum_defs: list[str] = []
             for header_name, header_path in headers.items():
-                if header_name == "llama.h":
+                if header_name in api_header_names:
                     continue
                 if header_path is None or not Path(header_path).exists():
                     continue
@@ -487,7 +550,7 @@ typedef void * ggml_opt_epoch_callback;
         extra_struct_names: set[str] = set()
 
         for header_name, header_path in headers.items():
-            if header_name == "llama.h":
+            if header_name in api_header_names:
                 continue
             if header_path is None or not Path(header_path).exists():
                 continue
@@ -511,7 +574,7 @@ typedef void * ggml_opt_epoch_callback;
         if extra_struct_names:
             extra_struct_defs: list[str] = []
             for header_name, header_path in headers.items():
-                if header_name == "llama.h":
+                if header_name in api_header_names:
                     continue
                 if header_path is None or not Path(header_path).exists():
                     continue
@@ -555,6 +618,7 @@ def generate_bindings_file(
     timestamp: Optional[str] = None,
 ):
     """Generate the _cffi_bindings.py file."""
+    _sync_converter_assets(project_root, vendor_path)
     headers = find_header_files(vendor_path)
 
     cdef_text = generate_cdef(headers) if headers else ""

@@ -3,7 +3,7 @@
 """Validate that the Python CFFI surface matches llama.cpp's public C API.
 
 What it checks:
-- Public API (LLAMA_API) functions in vendor llama.h are present in the CFFI cdef.
+- Public API functions in the vendored public headers are present in the CFFI cdef.
 - Optionally, that those functions are also exported by the built shared library.
 
 This is intended to be run after syncing/updating vendor/llama.cpp and/or
@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import Iterable
 
 _IDENT_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+_API_MACROS = ("LLAMA_API", "GGML_API")
 
 
 # Keep these in sync with the rewrites in scripts/gen_bindings.py preprocess_header().
@@ -34,11 +35,19 @@ def _project_root() -> Path:
     return Path(__file__).resolve().parent.parent
 
 
-def _default_header_path(project_root: Path) -> Path:
-    p = project_root / "vendor" / "llama.cpp" / "include" / "llama.h"
-    if not p.exists():
-        raise FileNotFoundError(f"Could not find llama.h at: {p}")
-    return p
+def _default_header_paths(project_root: Path) -> list[Path]:
+    vendor_root = project_root / "vendor" / "llama.cpp"
+    paths = [
+        vendor_root / "include" / "llama.h",
+        vendor_root / "ggml" / "include" / "gguf.h",
+    ]
+
+    missing = [path for path in paths if not path.exists()]
+    if missing:
+        joined = ", ".join(str(path) for path in missing)
+        raise FileNotFoundError(f"Could not find expected public header(s): {joined}")
+
+    return paths
 
 
 def _default_cffi_bindings_path(project_root: Path) -> Path:
@@ -253,17 +262,22 @@ def _extract_structs(text: str) -> dict[str, set[str]]:
     return structs
 
 
-def _iter_llama_api_function_decls(header_text: str) -> Iterable[str]:
-    # We intentionally scan from LLAMA_API occurrences, because the header uses
-    # conditional wrappers (e.g. DEPRECATED(...)). This keeps it robust.
+def _iter_public_api_function_decls(header_text: str) -> Iterable[str]:
+    # We intentionally scan from public API macro occurrences, because the headers
+    # use conditional wrappers (e.g. DEPRECATED(...)). This keeps it robust.
     i = 0
     n = len(header_text)
     while True:
-        idx = header_text.find("LLAMA_API", i)
-        if idx < 0:
+        next_idx = -1
+        for macro in _API_MACROS:
+            idx = header_text.find(macro, i)
+            if idx >= 0 and (next_idx < 0 or idx < next_idx):
+                next_idx = idx
+
+        if next_idx < 0:
             return
 
-        j = idx
+        j = next_idx
         paren_depth = 0
         saw_paren = False
 
@@ -276,14 +290,14 @@ def _iter_llama_api_function_decls(header_text: str) -> Iterable[str]:
                 if paren_depth > 0:
                     paren_depth -= 1
             elif ch == ";" and saw_paren and paren_depth == 0:
-                yield header_text[idx : j + 1]
+                yield header_text[next_idx : j + 1]
                 i = j + 1
                 break
             j += 1
 
         # Safety: if we failed to find a terminator, move forward.
         if j >= n:
-            i = idx + 8
+            i = next_idx + 1
 
 
 def _decl_to_func_name(decl: str) -> str | None:
@@ -349,7 +363,7 @@ def _extract_header_public_functions(header_text: str) -> set[str]:
     header_text = _strip_preprocessor_lines(header_text)
     funcs: set[str] = set()
 
-    for decl in _iter_llama_api_function_decls(header_text):
+    for decl in _iter_public_api_function_decls(header_text):
         name = _decl_to_func_name(decl)
         if name:
             funcs.add(name)
@@ -558,10 +572,11 @@ def _extract_header_function_signatures(header_text: str) -> dict[str, str]:
     header_text = _strip_preprocessor_lines(header_text)
     sigs: dict[str, str] = {}
 
-    for decl in _iter_llama_api_function_decls(header_text):
+    for decl in _iter_public_api_function_decls(header_text):
         decl_one_line = " ".join(decl.replace("\r", "").split())
         decl_one_line = _unwrap_deprecated_decl(decl_one_line)
-        decl_one_line = decl_one_line.replace("LLAMA_API ", "").replace(" LLAMA_API ", " ")
+        for macro in _API_MACROS:
+            decl_one_line = decl_one_line.replace(f"{macro} ", "").replace(f" {macro} ", " ")
 
         for pattern, repl in _SIG_TYPE_REWRITES:
             decl_one_line = re.sub(pattern, repl, decl_one_line)
@@ -654,8 +669,9 @@ def main() -> int:
     parser.add_argument(
         "--header",
         type=Path,
+        action="append",
         default=None,
-        help="Path to vendor llama.h (default: vendor/llama.cpp/include/llama.h)",
+        help="Path to a public API header. May be passed multiple times; defaults to vendored llama.h and gguf.h.",
     )
     parser.add_argument(
         "--bindings",
@@ -704,10 +720,12 @@ def main() -> int:
     args = parser.parse_args()
 
     root = _project_root()
-    header_path = args.header or _default_header_path(root)
+    header_paths = args.header or _default_header_paths(root)
     bindings_path = args.bindings or _default_cffi_bindings_path(root)
 
-    header_text = header_path.read_text(encoding="utf-8", errors="ignore")
+    header_text = "\n\n".join(
+        path.read_text(encoding="utf-8", errors="ignore") for path in header_paths
+    )
     bindings_text = bindings_path.read_text(encoding="utf-8", errors="ignore")
     cdef_text = _extract_cdef_text(bindings_text)
 

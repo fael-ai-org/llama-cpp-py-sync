@@ -7,7 +7,7 @@ name = "llama-cpp-py-sync"
 dynamic = ["version"]
 description = "Auto-synchronized Python bindings for llama.cpp using CFFI ABI mode"
 readme = "README.md"
-license = "MIT"
+license = {text = "MIT"}
 license-files = ["LICENSE"]
 authors = [
     {name = "Faris Al-Zahrani", email = "contact@fariszahrani.com"}
@@ -115,8 +115,11 @@ target-version = "py38"
 select = ["E", "F", "W", "I", "UP", "B", "C4"]
 ignore = ["E501"]
 
- [tool.ruff.lint.per-file-ignores]
- "src/llama_cpp_py_sync/_cffi_bindings.py" = ["W291"]
+[tool.ruff.lint.per-file-ignores]
+"src/llama_cpp_py_sync/_cffi_bindings.py" = ["W291"]
+"src/llama_cpp_py_sync/convert_hf_to_gguf.py" = ["ALL"]
+"src/llama_cpp_py_sync/convert_llama_ggml_to_gguf.py" = ["ALL"]
+"src/llama_cpp_py_sync/convert_lora_to_gguf.py" = ["ALL"]
 
 [tool.mypy]
 python_version = "3.8"

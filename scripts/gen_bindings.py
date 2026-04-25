@@ -15,7 +15,6 @@ from datetime import datetime
 from pathlib import Path
 from typing import List, Optional
 
-
 API_HEADER_NAMES = ("gguf.h", "llama.h")
 CONVERTER_SCRIPT_NAME = "convert_hf_to_gguf.py"
 STAGED_CONVERTER_SCRIPTS = (
@@ -425,7 +424,7 @@ def _sync_converter_assets(project_root: Path, vendor_path: Path) -> None:
             continue
 
         content = converter_src.read_text(encoding="utf-8")
-        for old_text, new_text in STAGED_SCRIPT_REWRITES.get(script_name, ()): 
+        for old_text, new_text in STAGED_SCRIPT_REWRITES.get(script_name, ()):
             content = content.replace(old_text, new_text)
         (package_root / script_name).write_text(content, encoding="utf-8")
 

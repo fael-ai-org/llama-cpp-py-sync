@@ -8,6 +8,7 @@ CUDA, ROCm, Vulkan, Metal, and various BLAS implementations.
 """
 
 import argparse
+import json
 import os
 import platform
 import re
@@ -94,6 +95,95 @@ def _copy_msvc_openmp_runtimes(package_dir: Path) -> int:
     return copied
 
 
+def _copy_runtime_dylib(src: Path, dst_dir: Path) -> bool:
+    if not src.exists() or not src.is_file():
+        return False
+    dst = dst_dir / src.name
+    try:
+        shutil.copy2(src, dst)
+    except Exception:
+        return False
+    return True
+
+
+def _brew_prefix(formula: str) -> Optional[Path]:
+    brew = _find_brew()
+    if brew is None:
+        return None
+    try:
+        result = subprocess.run(
+            [brew, "--prefix", formula],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except Exception:
+        return None
+    if result.returncode != 0:
+        return None
+    prefix = result.stdout.strip()
+    if not prefix:
+        return None
+    path = Path(prefix)
+    return path if path.exists() else None
+
+
+def _macos_vulkan_library_dirs() -> list[Path]:
+    dirs: list[Path] = []
+
+    vulkan_sdk = os.environ.get("VULKAN_SDK")
+    if vulkan_sdk:
+        sdk_root = Path(vulkan_sdk)
+        for subdir in ["lib", "Lib", "MoltenVK/macOS", "macOS/lib"]:
+            _append_unique_dir(dirs, sdk_root / subdir)
+
+    for prefix_formula in ["vulkan-loader", "molten-vk"]:
+        prefix = _brew_prefix(prefix_formula)
+        if prefix is not None:
+            _append_unique_dir(dirs, prefix / "lib")
+
+    for lib_dir in [Path("/usr/local/lib"), Path("/opt/homebrew/lib")]:
+        _append_unique_dir(dirs, lib_dir)
+
+    return dirs
+
+
+def _macos_vulkan_icd_candidates() -> list[Path]:
+    candidates: list[Path] = []
+
+    vulkan_sdk = os.environ.get("VULKAN_SDK")
+    if vulkan_sdk:
+        sdk_root = Path(vulkan_sdk)
+        for subdir in [
+            "share/vulkan/icd.d/MoltenVK_icd.json",
+            "MoltenVK/icd/MoltenVK_icd.json",
+            "macOS/share/vulkan/icd.d/MoltenVK_icd.json",
+        ]:
+            path = sdk_root / subdir
+            if path.exists():
+                candidates.append(path)
+
+    for prefix_formula in ["molten-vk", "vulkan-loader"]:
+        prefix = _brew_prefix(prefix_formula)
+        if prefix is not None:
+            icd = prefix / "share" / "vulkan" / "icd.d" / "MoltenVK_icd.json"
+            if icd.exists():
+                candidates.append(icd)
+
+    for icd in [
+        Path("/usr/local/share/vulkan/icd.d/MoltenVK_icd.json"),
+        Path("/opt/homebrew/share/vulkan/icd.d/MoltenVK_icd.json"),
+    ]:
+        if icd.exists():
+            candidates.append(icd)
+
+    return candidates
+
+
+def _macos_vulkan_dylib_patterns() -> list[str]:
+    return ["libvulkan*.dylib", "libMoltenVK*.dylib"]
+
+
 def _copy_vulkan_runtime_dlls(package_dir: Path) -> int:
     copied = 0
     vulkan_sdk = os.environ.get("VULKAN_SDK")
@@ -114,6 +204,156 @@ def _copy_vulkan_runtime_dlls(package_dir: Path) -> int:
                 break
 
     return copied
+
+
+def _copy_vulkan_runtime_dylibs(package_dir: Path) -> int:
+    copied = 0
+    seen: set[str] = set()
+
+    for lib_dir in _macos_vulkan_library_dirs():
+        for pattern in _macos_vulkan_dylib_patterns():
+            for src in lib_dir.glob(pattern):
+                if not src.is_file():
+                    continue
+                key = src.name.lower()
+                if key in seen:
+                    continue
+                seen.add(key)
+                if _copy_runtime_dylib(src, package_dir):
+                    copied += 1
+                    print(f"Bundled Vulkan runtime: {src} -> {package_dir / src.name}")
+
+    return copied
+
+
+def _bundle_macos_vulkan_icd(package_dir: Path) -> bool:
+    dest = package_dir / "MoltenVK_icd.json"
+    if dest.exists():
+        return True
+
+    moltenvk_name = ""
+    for candidate in sorted(package_dir.glob("libMoltenVK*.dylib")):
+        moltenvk_name = candidate.name
+        break
+
+    if not moltenvk_name:
+        return False
+
+    icd_payload = {
+        "file_format_version": "1.0.0",
+        "ICD": {
+            "library_path": f"./{moltenvk_name}",
+            "api_version": "1.2.0",
+            "is_portability_driver": True,
+        },
+    }
+
+    for src in _macos_vulkan_icd_candidates():
+        try:
+            data = json.loads(src.read_text(encoding="utf-8"))
+            icd = data.get("ICD")
+            if isinstance(icd, dict):
+                icd["library_path"] = f"./{moltenvk_name}"
+            icd_payload = data
+            break
+        except Exception:
+            continue
+
+    try:
+        dest.write_text(json.dumps(icd_payload, indent=4) + "\n", encoding="utf-8")
+        print(f"Bundled MoltenVK ICD: {dest}")
+        return True
+    except Exception:
+        return False
+
+
+def _otool_load_commands(dylib: Path) -> list[str]:
+    try:
+        result = subprocess.run(
+            ["otool", "-L", str(dylib)],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except FileNotFoundError:
+        return []
+
+    if result.returncode != 0:
+        return []
+
+    deps: list[str] = []
+    for line in (result.stdout or "").splitlines()[1:]:
+        line = line.strip()
+        if not line:
+            continue
+        dep = line.split("(", 1)[0].strip()
+        if dep.startswith("@loader_path/") or dep.startswith("@rpath/"):
+            continue
+        deps.append(dep)
+    return deps
+
+
+def _resolve_bundled_dylib_name(package_dir: Path, dep_path: str) -> Optional[str]:
+    dep_name = Path(dep_path).name
+    direct = package_dir / dep_name
+    if direct.exists():
+        return dep_name
+
+    stem = dep_name
+    if stem.endswith(".dylib"):
+        stem = stem[: -len(".dylib")]
+    matches = sorted(package_dir.glob(f"{stem}*.dylib"))
+    if matches:
+        return matches[0].name
+    return None
+
+
+def _patch_macos_package_dylibs(package_dir: Path) -> None:
+    dylibs = sorted(p for p in package_dir.glob("*.dylib") if p.is_file())
+    if not dylibs:
+        return
+
+    for dylib in dylibs:
+        _run_install_name_tool(["-id", f"@loader_path/{dylib.name}", str(dylib)])
+        _run_install_name_tool(["-add_rpath", "@loader_path", str(dylib)])
+
+    for dylib in dylibs:
+        for dep_path in _otool_load_commands(dylib):
+            bundled_name = _resolve_bundled_dylib_name(package_dir, dep_path)
+            if bundled_name is None:
+                continue
+            _run_install_name_tool(
+                [
+                    "-change",
+                    dep_path,
+                    f"@loader_path/{bundled_name}",
+                    str(dylib),
+                ]
+            )
+
+
+def _bundle_macos_vulkan_runtime(
+    package_dir: Path,
+    backends: Dict[str, Tuple[bool, Optional[str]]],
+    enable_vulkan: bool,
+) -> None:
+    if not enable_vulkan or not backends.get("vulkan", (False, None))[0]:
+        return
+
+    vulkan_count = _copy_vulkan_runtime_dylibs(package_dir)
+    icd_ok = _bundle_macos_vulkan_icd(package_dir)
+    _patch_macos_package_dylibs(package_dir)
+
+    if vulkan_count == 0:
+        print(
+            "Warning: Vulkan backend was enabled but no macOS Vulkan runtime dylibs were bundled. "
+            "Install the Vulkan SDK (set VULKAN_SDK) or `brew install molten-vk vulkan-loader` before building."
+        )
+    elif not icd_ok:
+        print(
+            "Warning: Vulkan runtime dylibs were bundled but MoltenVK_icd.json could not be created. "
+            "GPU offload may fail unless VK_ICD_FILENAMES is set at runtime."
+        )
 
 
 def _copy_cuda_runtime_dlls(package_dir: Path) -> int:
@@ -711,6 +951,20 @@ def detect_vulkan() -> Tuple[bool, Optional[str]]:
         if Path("/usr/include/vulkan/vulkan.h").exists():
             return True, "system"
 
+    if platform.system() == "Darwin":
+        header_candidates = [
+            Path("/usr/local/include/vulkan/vulkan.h"),
+            Path("/opt/homebrew/include/vulkan/vulkan.h"),
+        ]
+        for header in header_candidates:
+            if header.exists():
+                return True, str(header.parent.parent)
+
+        for prefix_formula in ["vulkan-loader", "vulkan-headers"]:
+            prefix = _brew_prefix(prefix_formula)
+            if prefix is not None and (prefix / "include" / "vulkan" / "vulkan.h").exists():
+                return True, str(prefix)
+
     return False, None
 
 
@@ -1082,6 +1336,11 @@ def copy_library_to_package(lib_path: Path, package_dir: Path) -> Path:
     """Copy the built library to the package directory."""
     package_dir.mkdir(parents=True, exist_ok=True)
 
+    for pattern in ["*.dylib", "*.so", "*.so.*", "*.dll", "MoltenVK_icd.json"]:
+        for artifact in package_dir.glob(pattern):
+            if artifact.is_file():
+                artifact.unlink()
+
     dest_path = package_dir / lib_path.name
     shutil.copy2(lib_path, dest_path)
 
@@ -1196,6 +1455,13 @@ def build_llama_cpp(
             output_dir,
             backends,
             enable_cuda=enable_cuda,
+        )
+
+    if _is_macos() and enable_vulkan:
+        _bundle_macos_vulkan_runtime(
+            output_dir,
+            backends,
+            enable_vulkan=enable_vulkan,
         )
 
     return dest_path

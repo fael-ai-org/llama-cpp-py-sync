@@ -17,7 +17,7 @@
 - Automatic upstream sync and binding regeneration
 - Prebuilt wheels built by CI
 - CPU wheels published to PyPI
-- Backend-specific wheels published to GitHub Releases: Linux CUDA (12.2) and Vulkan, Windows CUDA (12.4) and Vulkan, macOS Apple Silicon Metal
+- Backend-specific wheels published to GitHub Releases: Linux CUDA (12.2) and Vulkan, Windows CUDA (12.4) and Vulkan, macOS Apple Silicon Metal, macOS Intel Vulkan (MoltenVK)
 - CI checks that the generated CFFI surface matches the upstream C API (functions, structs, enums, and signatures)
 - A small, explicit Python API (`Llama.generate`, `tokenize`, `get_embeddings`, etc.)
 
@@ -311,7 +311,7 @@ The build system automatically detects available backends:
 | CUDA | Linux, Windows | `CUDA_HOME` or `/usr/local/cuda` |
 | ROCm | Linux | `ROCM_PATH` or `/opt/rocm` |
 | Metal | macOS | Xcode SDK |
-| Vulkan | All | `VULKAN_SDK` environment variable |
+| Vulkan | Linux, Windows, macOS (Intel) | `VULKAN_SDK`, Homebrew (`vulkan-loader`, `molten-vk`), or system headers |
 | BLAS | All | OpenBLAS, MKL, or Accelerate |
 
 ### Runtime Configuration

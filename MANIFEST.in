@@ -3,7 +3,7 @@ include README.md
 include THIRD_PARTY_NOTICES.txt
 include pyproject.toml
 
-recursive-include src/llama_cpp_py_sync *.py *.pyi *.so *.so.* *.dylib *.dll
+recursive-include src/llama_cpp_py_sync *.py *.pyi *.so *.so.* *.dylib *.dll *.json
 recursive-include scripts *.py
 
 prune vendor

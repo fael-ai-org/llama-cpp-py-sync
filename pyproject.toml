@@ -82,6 +82,7 @@ llama_cpp_py_sync = [
     "*.dylib",
     "*.dll",
     "*.pyd",
+    "*.json",
     "THIRD_PARTY_NOTICES.txt",
     "py.typed",
 ]

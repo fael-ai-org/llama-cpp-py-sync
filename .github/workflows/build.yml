@@ -662,6 +662,83 @@ jobs:
           name: wheel-macos-x86_64-cpu
           path: dist/*.whl
 
+  build-macos-x86_64-vulkan:
+    needs: [check-upstream, validate-bindings]
+    if: needs.check-upstream.outputs.should_build == 'true'
+    runs-on: macos-15-intel
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version-file: .python-version
+      
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install build wheel cffi numpy
+      
+      - name: Clone llama.cpp
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $env:LLAMA_SHA = '${{ needs.check-upstream.outputs.upstream_sha }}'
+          git clone ${{ env.LLAMA_CPP_REPO }} vendor/llama.cpp
+          git -C vendor/llama.cpp fetch --depth 1 origin $env:LLAMA_SHA
+          git -C vendor/llama.cpp checkout --detach $env:LLAMA_SHA
+
+      - name: Install build tools
+        run: |
+          brew install cmake ninja
+
+      - name: Install Vulkan SDK
+        uses: jakoch/install-vulkan-sdk-action@v1
+        with:
+          vulkan_version: '1.4.335.0'
+
+      - name: Regenerate bindings from vendored llama.cpp
+        run: |
+          python scripts/gen_bindings.py --commit-sha "$(git -C vendor/llama.cpp rev-parse HEAD)"
+      
+      - name: Build llama.cpp with Vulkan
+        run: |
+          python scripts/build_llama_cpp.py --no-cuda --no-rocm --no-metal
+
+      - name: Validate llama.cpp exports
+        run: |
+          python scripts/validate_llama_exports.py
+      
+      - name: Generate version
+        run: |
+          python scripts/auto_version.py --update
+      
+      - name: Build wheel
+        run: |
+          python -m build --wheel
+
+      - name: Retag wheel (macos)
+        run: |
+          python -m pip install --upgrade wheel
+          ORIGINAL_WHEELS=$(ls dist/*.whl)
+          for w in $ORIGINAL_WHEELS; do
+            python -m wheel tags --platform-tag macosx_14_0_x86_64 --build 1vulkan "$w"
+          done
+          rm -f $ORIGINAL_WHEELS
+
+      - name: Smoke test installed wheel
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install --force-reinstall dist/*.whl
+          python -c "from llama_cpp_py_sync._cffi_bindings import get_lib; get_lib(); print('smoke-ok')"
+          python -c "from llama_cpp_py_sync.backends import get_backend_info; info=get_backend_info(); assert info.gpu_offload, info; print('gpu-offload-ok')"
+      
+      - name: Upload wheel
+        uses: actions/upload-artifact@v4
+        with:
+          name: wheel-macos-x86_64-vulkan
+          path: dist/*.whl
+
   build-windows-x64:
     needs: [check-upstream, validate-bindings]
     if: needs.check-upstream.outputs.should_build == 'true'
@@ -1260,7 +1337,7 @@ jobs:
           path: dist/*win_amd64.whl
 
   release:
-    needs: [check-upstream, build-linux-x86_64, build-linux-x86_64-cuda, build-linux-x86_64-vulkan, build-macos-arm64, build-macos-x86_64, build-windows-x64, build-windows-x64-cuda, build-windows-x64-vulkan]
+    needs: [check-upstream, build-linux-x86_64, build-linux-x86_64-cuda, build-linux-x86_64-vulkan, build-macos-arm64, build-macos-x86_64, build-macos-x86_64-vulkan, build-windows-x64, build-windows-x64-cuda, build-windows-x64-vulkan]
     if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
     permissions:

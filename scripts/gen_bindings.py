@@ -660,6 +660,11 @@ def _load_library():
                 os.environ["PATH"] = lib_dir + os.pathsep + os.environ.get("PATH", "")
             except Exception:
                 pass
+        elif platform.system().lower() == "darwin":
+            lib_dir = Path(lib_path).parent
+            icd_path = lib_dir / "MoltenVK_icd.json"
+            if icd_path.exists() and not os.environ.get("VK_ICD_FILENAMES"):
+                os.environ["VK_ICD_FILENAMES"] = str(icd_path)
 
         return ffi.dlopen(lib_path)
     except OSError as e:

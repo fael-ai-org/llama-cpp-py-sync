@@ -13,6 +13,32 @@ from typing import Iterator
 
 from llama_cpp_py_sync._cffi_bindings import get_ffi, get_lib
 
+# `ggml_type` values accepted for the KV cache. Kept to the types that are
+# actually useful for type_k / type_v rather than mirroring the whole enum.
+GGML_KV_TYPES: dict[str, int] = {
+    "f32": 0,
+    "f16": 1,
+    "q4_0": 2,
+    "q4_1": 3,
+    "q5_0": 6,
+    "q5_1": 7,
+    "q8_0": 8,
+    "bf16": 30,
+}
+
+
+def _resolve_ggml_type(value: int | str) -> int:
+    """Map a ggml type name to its enum value, passing ints through."""
+    if isinstance(value, str):
+        key = value.strip().lower()
+        if key not in GGML_KV_TYPES:
+            raise ValueError(
+                f"Unknown KV cache type {value!r}; expected one of "
+                f"{', '.join(sorted(GGML_KV_TYPES))} or a ggml_type int."
+            )
+        return GGML_KV_TYPES[key]
+    return int(value)
+
 
 @dataclass
 class GenerationConfig:
@@ -57,6 +83,9 @@ class Llama:
         verbose: bool = False,
         embedding: bool = False,
         flash_attn_type: int | None = None,
+        type_k: int | str | None = None,
+        type_v: int | str | None = None,
+        offload_kqv: bool | None = None,
     ):
         """
         Initialize the Llama model.
@@ -76,6 +105,14 @@ class Llama:
             embedding: Whether to enable embedding mode.
             flash_attn_type: ``llama_flash_attn_type`` value (e.g. 0 off, 1 on, -1 auto).
                 If ``None``, uses ``LLAMA_FLASH_ATTENTION`` env (same rules as before).
+            type_k: KV cache data type for keys, as a ``ggml_type`` value or a
+                name such as ``"f16"`` or ``"q8_0"``. ``None`` keeps the
+                llama.cpp default. Quantizing the KV cache trades a little
+                quality for a large reduction in KV memory at high ``n_ctx``.
+            type_v: KV cache data type for values; see ``type_k``. Note that
+                llama.cpp requires flash attention for a quantized V cache.
+            offload_kqv: Whether to keep the KV cache on the GPU. ``None``
+                keeps the llama.cpp default.
         """
         if not os.path.exists(model_path):
             raise FileNotFoundError(f"Model file not found: {model_path}")
@@ -89,6 +126,9 @@ class Llama:
         self._verbose = verbose
         self._embedding = embedding
         self._n_ctx = n_ctx
+        # Prompt evaluation must be chunked to this width: llama_decode asserts
+        # on any batch wider than the context's n_batch.
+        self._n_batch = max(1, int(n_batch))
 
         self._lib.llama_backend_init()
 
@@ -123,6 +163,12 @@ class Llama:
             n_threads_batch if n_threads_batch is not None else n_thr
         )
         ctx_params.embeddings = embedding
+        if type_k is not None:
+            ctx_params.type_k = _resolve_ggml_type(type_k)
+        if type_v is not None:
+            ctx_params.type_v = _resolve_ggml_type(type_v)
+        if offload_kqv is not None:
+            ctx_params.offload_kqv = bool(offload_kqv)
         if flash_attn_type is not None:
             ctx_params.flash_attn_type = flash_attn_type
         else:
@@ -375,27 +421,46 @@ class Llama:
         return self._ffi.string(buf, n).decode("utf-8", errors="replace")
 
     def _eval_tokens(self, tokens: list[int], n_past: int) -> int:
-        """Evaluate tokens and update the context."""
-        batch = self._lib.llama_batch_init(len(tokens), 0, 1)
+        """Evaluate tokens and update the context.
 
-        try:
-            batch.n_tokens = len(tokens)
-            for i, token in enumerate(tokens):
-                batch.token[i] = token
-                batch.pos[i] = n_past + i
-                batch.n_seq_id[i] = 1
-                batch.seq_id[i][0] = 0
-                batch.logits[i] = 0
+        The batch is split into ``n_batch``-wide chunks. llama_decode asserts
+        (aborting the process, not raising) when handed more tokens than the
+        context's ``n_batch``, so a long prompt must never be submitted whole.
+        Logits are requested only for the very last token, which is all the
+        sampler needs.
+        """
+        if not tokens:
+            return n_past
 
-            batch.logits[len(tokens) - 1] = 1
+        total = len(tokens)
+        offset = 0
 
-            result = self._lib.llama_decode(self._ctx, batch)
-            if result != 0:
-                raise RuntimeError(f"llama_decode failed with code {result}")
+        while offset < total:
+            chunk = tokens[offset : offset + self._n_batch]
+            is_last_chunk = offset + len(chunk) >= total
+            batch = self._lib.llama_batch_init(len(chunk), 0, 1)
 
-            return n_past + len(tokens)
-        finally:
-            self._lib.llama_batch_free(batch)
+            try:
+                batch.n_tokens = len(chunk)
+                for i, token in enumerate(chunk):
+                    batch.token[i] = token
+                    batch.pos[i] = n_past + offset + i
+                    batch.n_seq_id[i] = 1
+                    batch.seq_id[i][0] = 0
+                    batch.logits[i] = 0
+
+                if is_last_chunk:
+                    batch.logits[len(chunk) - 1] = 1
+
+                result = self._lib.llama_decode(self._ctx, batch)
+                if result != 0:
+                    raise RuntimeError(f"llama_decode failed with code {result}")
+            finally:
+                self._lib.llama_batch_free(batch)
+
+            offset += len(chunk)
+
+        return n_past + total
 
     def _sample_token(self) -> int:
         """Sample the next token from the model's output."""
@@ -555,6 +620,15 @@ class Llama:
         self._clear_context_state()
 
         tokens = self.tokenize(text, add_special=True)
+
+        # Pooled embeddings need the whole sequence in a single encode, so this
+        # batch cannot be chunked the way _eval_tokens is. Fail with a clear
+        # message instead of letting llama_encode abort the process.
+        if len(tokens) > self._n_batch:
+            raise ValueError(
+                f"Input is {len(tokens)} tokens but n_batch is {self._n_batch}; "
+                f"load the model with n_batch >= {len(tokens)} to embed this text."
+            )
 
         batch = self._lib.llama_batch_init(len(tokens), 0, 1)
         try:

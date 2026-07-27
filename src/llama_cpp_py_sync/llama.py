@@ -27,6 +27,15 @@ GGML_KV_TYPES: dict[str, int] = {
 }
 
 
+# `llama_load_mode` values, keyed by the names llama_load_mode_from_str accepts.
+LLAMA_LOAD_MODES: dict[str, int] = {
+    "none": 0,
+    "mmap": 1,
+    "mlock": 2,
+    "dio": 3,
+}
+
+
 def _resolve_ggml_type(value: int | str) -> int:
     """Map a ggml type name to its enum value, passing ints through."""
     if isinstance(value, str):
@@ -80,6 +89,7 @@ class Llama:
         seed: int = -1,
         use_mmap: bool = True,
         use_mlock: bool = False,
+        load_mode: int | str | None = None,
         verbose: bool = False,
         embedding: bool = False,
         flash_attn_type: int | None = None,
@@ -99,8 +109,14 @@ class Llama:
             n_ubatch: Physical microbatch size; capped by ``n_batch``. Defaults to ``n_batch``.
             n_threads_batch: Threads for prompt/batch processing; defaults to ``n_threads``.
             seed: Random seed for sampling (-1 for random).
-            use_mmap: Whether to use memory mapping for model loading.
-            use_mlock: Whether to lock model in memory.
+            use_mmap: Whether to use memory mapping for model loading. Ignored
+                when ``load_mode`` is given.
+            use_mlock: Whether to lock model in memory. Ignored when
+                ``load_mode`` is given.
+            load_mode: ``llama_load_mode`` value or name (``"none"``, ``"mmap"``,
+                ``"mlock"``, ``"dio"``). Supersedes ``use_mmap`` / ``use_mlock``,
+                which llama.cpp folded into this enum. Note ``"mlock"`` implies
+                mmap, and ``"dio"`` selects direct I/O.
             verbose: Whether to print verbose output.
             embedding: Whether to enable embedding mode.
             flash_attn_type: ``llama_flash_attn_type`` value (e.g. 0 off, 1 on, -1 auto).
@@ -134,8 +150,17 @@ class Llama:
 
         model_params = self._lib.llama_model_default_params()
         model_params.n_gpu_layers = n_gpu_layers
-        model_params.use_mmap = use_mmap
-        model_params.use_mlock = use_mlock
+        # llama.cpp folded use_mmap / use_mlock / use_direct_io into a single
+        # llama_load_mode enum. An explicit load_mode wins; otherwise the legacy
+        # booleans are translated, with mlock implying mmap as upstream defines.
+        if load_mode is not None:
+            model_params.load_mode = self._resolve_load_mode(load_mode)
+        elif use_mlock:
+            model_params.load_mode = 2  # LLAMA_LOAD_MODE_MLOCK (implies mmap)
+        elif use_mmap:
+            model_params.load_mode = 1  # LLAMA_LOAD_MODE_MMAP
+        else:
+            model_params.load_mode = 0  # LLAMA_LOAD_MODE_NONE
 
         if self._verbose:
             print(f"Loading model from {model_path}...")
@@ -210,6 +235,24 @@ class Llama:
             print(f"  Vocab size: {self.n_vocab}")
             print(f"  Context size: {self.n_ctx}")
             print(f"  Embedding size: {self.n_embd}")
+
+    def _resolve_load_mode(self, value: int | str) -> int:
+        """Map a load-mode name to its enum value, passing ints through.
+
+        Resolved in Python on purpose: llama.cpp's ``llama_load_mode_from_str``
+        throws ``std::invalid_argument`` for an unknown name, and a C++
+        exception crossing the CFFI boundary terminates the process instead of
+        raising. Names mirror that function's accepted set.
+        """
+        if not isinstance(value, str):
+            return int(value)
+        key = value.strip().lower()
+        if key not in LLAMA_LOAD_MODES:
+            raise ValueError(
+                f"Unknown load mode {value!r}; expected one of "
+                f"{', '.join(LLAMA_LOAD_MODES)} or a llama_load_mode int."
+            )
+        return LLAMA_LOAD_MODES[key]
 
     def _setup_sampler(self, seed: int = -1):
         """Set up the default sampler chain."""

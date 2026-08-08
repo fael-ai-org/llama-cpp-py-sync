@@ -613,7 +613,15 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $env:LLAMA_SHA = '${{ needs.check-upstream.outputs.upstream_sha }}'
-          git clone ${{ env.LLAMA_CPP_REPO }} vendor/llama.cpp
+          for ($attempt = 1; $attempt -le 3; $attempt++) {
+            if (Test-Path vendor/llama.cpp) {
+              Remove-Item -Recurse -Force vendor/llama.cpp
+            }
+            git clone ${{ env.LLAMA_CPP_REPO }} vendor/llama.cpp
+            if ($LASTEXITCODE -eq 0) { break }
+            if ($attempt -eq 3) { throw "Unable to clone llama.cpp after three attempts" }
+            Start-Sleep -Seconds 10
+          }
           git -C vendor/llama.cpp fetch --depth 1 origin $env:LLAMA_SHA
           git -C vendor/llama.cpp checkout --detach $env:LLAMA_SHA
 

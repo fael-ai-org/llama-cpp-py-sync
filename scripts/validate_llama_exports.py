@@ -35,6 +35,22 @@ def _default_library_path(project_root: Path) -> Path:
     )
 
 
+def _default_mtmd_library_path(project_root: Path) -> Path:
+    pkg_dir = project_root / "src" / "llama_cpp_py_sync"
+    system = platform.system().lower()
+    if system == "windows":
+        names = ["mtmd.dll", "libmtmd.dll"]
+    elif system == "darwin":
+        names = ["libmtmd.dylib", "libmtmd.so"]
+    else:
+        names = ["libmtmd.so"]
+    for name in names:
+        path = pkg_dir / name
+        if path.exists():
+            return path
+    raise FileNotFoundError("Could not locate the packaged mtmd shared library")
+
+
 def _load_library(lib_path: Path) -> ctypes.CDLL:
     system = platform.system().lower()
 
@@ -85,6 +101,12 @@ def main() -> int:
         default=None,
         help="Path to the built llama shared library (defaults to src/llama_cpp_py_sync/*llama*)",
     )
+    parser.add_argument(
+        "--mtmd-lib",
+        type=Path,
+        default=None,
+        help="Path to the built mtmd shared library",
+    )
 
     args = parser.parse_args()
 
@@ -107,11 +129,40 @@ def main() -> int:
         ]
         if missing:
             raise RuntimeError(f"Missing required export(s): {', '.join(missing)}")
-        return 0
+        mtmd_path = args.mtmd_lib or _default_mtmd_library_path(root)
+        mtmd_dumpbin = _windows_dumpbin_exports_text(mtmd_path)
+        if mtmd_dumpbin is not None:
+            missing_mtmd = [
+                sym
+                for sym in [
+                    "mtmd_context_params_default",
+                    "mtmd_init_from_file",
+                    "mtmd_free",
+                    "mtmd_tokenize",
+                    "mtmd_helper_bitmap_init_from_buf",
+                    "mtmd_helper_eval_chunk_single",
+                ]
+                if re.search(rf"\b{re.escape(sym)}\b", mtmd_dumpbin) is None
+            ]
+            if missing_mtmd:
+                raise RuntimeError(f"Missing required mtmd export(s): {', '.join(missing_mtmd)}")
+            return 0
 
     lib = _load_library(lib_path)
     for sym in required:
         _require_symbol(lib, sym)
+
+    mtmd_path = args.mtmd_lib or _default_mtmd_library_path(root)
+    mtmd = _load_library(mtmd_path)
+    for sym in [
+        "mtmd_context_params_default",
+        "mtmd_init_from_file",
+        "mtmd_free",
+        "mtmd_tokenize",
+        "mtmd_helper_bitmap_init_from_buf",
+        "mtmd_helper_eval_chunk_single",
+    ]:
+        _require_symbol(mtmd, sym)
 
     return 0
 

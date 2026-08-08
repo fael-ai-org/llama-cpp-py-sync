@@ -1,0 +1,46 @@
+{
+  "llama_cpp_commit": "2b63e0610bbc2be990ae1360d5256efcdc3f9efb",
+  "mtmd_abi": "tools/mtmd/mtmd.h and tools/mtmd/mtmd-helper.h C API",
+  "libraries": {
+    "core": "libllama",
+    "multimodal": "libmtmd",
+    "dependencies": "libggml-*"
+  },
+  "backend_variants": [
+    "cpu",
+    "metal",
+    "cuda",
+    "vulkan"
+  ],
+  "platform_names": {
+    "linux": [
+      "libllama.so*",
+      "libmtmd.so*",
+      "libggml-*.so*"
+    ],
+    "macos": [
+      "libllama*.dylib",
+      "libmtmd*.dylib",
+      "libggml-*.dylib"
+    ],
+    "windows": [
+      "*llama*.dll",
+      "*mtmd*.dll",
+      "ggml-*.dll"
+    ]
+  },
+  "sbom_components": [
+    {
+      "name": "llama.cpp",
+      "license": "MIT"
+    },
+    {
+      "name": "stb_image",
+      "license": "Public Domain"
+    },
+    {
+      "name": "miniaudio",
+      "license": "Public Domain or MIT-0"
+    }
+  ]
+}

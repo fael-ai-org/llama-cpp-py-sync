@@ -29,6 +29,20 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
 ---
+llama.cpp mtmd image/audio helpers
+
+The multimodal ``mtmd`` library is part of llama.cpp and is distributed under
+the MIT license above. Its bundled image/audio decoding uses the following
+redistribution-approved components:
+
+* stb_image (Sean Barrett): public domain, https://github.com/nothings/stb
+* miniaudio (David Reid): public domain or MIT-0,
+  https://github.com/mackron/miniaudio
+
+The exact source revisions are pinned by the llama.cpp commit recorded in the
+generated CFFI bindings.
+
+---
 NVIDIA CUDA runtime libraries
 
 Certain wheels may bundle NVIDIA CUDA user-mode runtime libraries (for example,

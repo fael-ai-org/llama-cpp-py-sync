@@ -247,7 +247,7 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           python -m pip install --force-reinstall dist/*.whl
-          python -c "from llama_cpp_py_sync._cffi_bindings import get_lib; get_lib(); print('smoke-ok')"
+          python -c "from llama_cpp_py_sync._cffi_bindings import get_lib, get_mtmd_lib; get_lib(); get_mtmd_lib(); print('smoke-ok')"
       
       - name: Upload wheel
         uses: actions/upload-artifact@v4
@@ -377,6 +377,7 @@ jobs:
           echo "Bundled Linux shared libraries:"
           find "$pkg_dir" -maxdepth 1 -type f \( \
             -name 'libllama.so*' -o \
+            -name 'libmtmd.so*' -o \
             -name 'libggml*.so*' -o \
             -name 'libcudart.so*' -o \
             -name 'libcublas*.so*' -o \
@@ -424,7 +425,7 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           python -m pip install --force-reinstall dist/*.whl
-          python -c "from llama_cpp_py_sync._cffi_bindings import get_lib; get_lib(); print('smoke-ok')"
+          python -c "from llama_cpp_py_sync._cffi_bindings import get_lib, get_mtmd_lib; get_lib(); get_mtmd_lib(); print('smoke-ok')"
       
       - name: Upload wheel
         uses: actions/upload-artifact@v4
@@ -496,7 +497,7 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           python -m pip install --force-reinstall dist/*.whl
-          python -c "from llama_cpp_py_sync._cffi_bindings import get_lib; get_lib(); print('smoke-ok')"
+          python -c "from llama_cpp_py_sync._cffi_bindings import get_lib, get_mtmd_lib; get_lib(); get_mtmd_lib(); print('smoke-ok')"
       
       - name: Upload wheel
         uses: actions/upload-artifact@v4
@@ -567,7 +568,7 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           python -m pip install --force-reinstall dist/*.whl
-          python -c "from llama_cpp_py_sync._cffi_bindings import get_lib; get_lib(); print('smoke-ok')"
+          python -c "from llama_cpp_py_sync._cffi_bindings import get_lib, get_mtmd_lib; get_lib(); get_mtmd_lib(); print('smoke-ok')"
       
       - name: Upload wheel
         uses: actions/upload-artifact@v4
@@ -654,7 +655,7 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           python -m pip install --force-reinstall dist/*.whl
-          python -c "from llama_cpp_py_sync._cffi_bindings import get_lib; get_lib(); print('smoke-ok')"
+          python -c "from llama_cpp_py_sync._cffi_bindings import get_lib, get_mtmd_lib; get_lib(); get_mtmd_lib(); print('smoke-ok')"
       
       - name: Upload wheel
         uses: actions/upload-artifact@v4
@@ -730,7 +731,7 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           python -m pip install --force-reinstall dist/*.whl
-          python -c "from llama_cpp_py_sync._cffi_bindings import get_lib; get_lib(); print('smoke-ok')"
+          python -c "from llama_cpp_py_sync._cffi_bindings import get_lib, get_mtmd_lib; get_lib(); get_mtmd_lib(); print('smoke-ok')"
           python -c "from llama_cpp_py_sync.backends import get_backend_info; info=get_backend_info(); assert info.gpu_offload, info; print('gpu-offload-ok')"
       
       - name: Upload wheel
@@ -910,7 +911,7 @@ jobs:
           $wheel = Get-ChildItem -Path dist -Filter *win_amd64.whl | Select-Object -First 1
           if (-not $wheel) { throw "No win_amd64 wheel found in dist/" }
           python -m pip install --force-reinstall $wheel.FullName
-          python -c "from llama_cpp_py_sync._cffi_bindings import get_lib; get_lib(); print('smoke-ok')"
+          python -c "from llama_cpp_py_sync._cffi_bindings import get_lib, get_mtmd_lib; get_lib(); get_mtmd_lib(); print('smoke-ok')"
       
       - name: Upload wheel
         uses: actions/upload-artifact@v4
@@ -1134,7 +1135,7 @@ jobs:
             exit 0
           }
 
-          python -c "import os; import pathlib; p=os.environ.get('CUDA_PATH'); pkg = pathlib.Path(__import__('llama_cpp_py_sync').__file__).parent; print('pkg_dir=', str(pkg)); print('bundled_dlls=', sorted([x.name for x in pkg.glob('*.dll')])); \nif p: \n  cuda_bin=os.path.join(p,'bin'); \n  if os.path.isdir(cuda_bin): \n    os.add_dll_directory(cuda_bin); \n    print('added_dll_dir=', cuda_bin); \nif os.path.isdir(r'C:\\Program Files\\NVIDIA Corporation\\NvToolsExt\\bin\\x64'): \n  os.add_dll_directory(r'C:\\Program Files\\NVIDIA Corporation\\NvToolsExt\\bin\\x64'); \n  print('added_dll_dir= NvToolsExt'); \nfrom llama_cpp_py_sync._cffi_bindings import get_lib; get_lib(); print('smoke-ok')"
+          python -c "import os; import pathlib; p=os.environ.get('CUDA_PATH'); pkg = pathlib.Path(__import__('llama_cpp_py_sync').__file__).parent; print('pkg_dir=', str(pkg)); print('bundled_dlls=', sorted([x.name for x in pkg.glob('*.dll')])); \nif p: \n  cuda_bin=os.path.join(p,'bin'); \n  if os.path.isdir(cuda_bin): \n    os.add_dll_directory(cuda_bin); \n    print('added_dll_dir=', cuda_bin); \nif os.path.isdir(r'C:\\Program Files\\NVIDIA Corporation\\NvToolsExt\\bin\\x64'): \n  os.add_dll_directory(r'C:\\Program Files\\NVIDIA Corporation\\NvToolsExt\\bin\\x64'); \n  print('added_dll_dir= NvToolsExt'); \nfrom llama_cpp_py_sync._cffi_bindings import get_lib, get_mtmd_lib; get_lib(); get_mtmd_lib(); print('smoke-ok')"
 
       - name: Diagnose llama.dll dependencies (windows cuda)
         if: failure()
@@ -1328,7 +1329,7 @@ jobs:
           $wheel = Get-ChildItem -Path dist -Filter *win_amd64.whl | Select-Object -First 1
           if (-not $wheel) { throw "No win_amd64 wheel found in dist/" }
           python -m pip install --force-reinstall $wheel.FullName
-          python -c "from llama_cpp_py_sync._cffi_bindings import get_lib; get_lib(); print('smoke-ok')"
+          python -c "from llama_cpp_py_sync._cffi_bindings import get_lib, get_mtmd_lib; get_lib(); get_mtmd_lib(); print('smoke-ok')"
       
       - name: Upload wheel
         uses: actions/upload-artifact@v4

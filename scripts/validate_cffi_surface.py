@@ -41,6 +41,13 @@ def _default_header_path(project_root: Path) -> Path:
     return p
 
 
+def _default_mtmd_header_paths(project_root: Path) -> list[Path]:
+    mtmd_dir = project_root / "vendor" / "llama.cpp" / "tools" / "mtmd"
+    return [
+        path for path in (mtmd_dir / "mtmd.h", mtmd_dir / "mtmd-helper.h") if path.exists()
+    ]
+
+
 def _default_cffi_bindings_path(project_root: Path) -> Path:
     p = project_root / "src" / "llama_cpp_py_sync" / "_cffi_bindings.py"
     if not p.exists():
@@ -67,6 +74,22 @@ def _default_library_path(project_root: Path) -> Path | None:
     return None
 
 
+def _default_mtmd_library_path(project_root: Path) -> Path | None:
+    pkg_dir = project_root / "src" / "llama_cpp_py_sync"
+    system = platform.system().lower()
+    if system == "windows":
+        names = ["mtmd.dll", "libmtmd.dll"]
+    elif system == "darwin":
+        names = ["libmtmd.dylib", "libmtmd.so"]
+    else:
+        names = ["libmtmd.so"]
+    for name in names:
+        path = pkg_dir / name
+        if path.exists():
+            return path
+    return None
+
+
 def _extract_cdef_text(bindings_py: str) -> str:
     # Keep this strict: if generation changes the marker, we want to notice.
     m = re.search(r"^_LLAMA_H_CDEF\s*=\s*\"\"\"\n(.*?)\n\"\"\"\s*$", bindings_py, re.DOTALL | re.MULTILINE)
@@ -86,10 +109,21 @@ def _strip_preprocessor_lines(text: str) -> str:
 
 
 def _slice_c_api_region(text: str) -> str:
-    # Best-effort: restrict to the "extern \"C\"" region.
+    # Restrict each public header to its C API and stop before the C++ wrappers
+    # that follow mtmd's extern-C block. This also supports concatenated headers.
     marker = 'extern "C"'
-    idx = text.find(marker)
-    return text[idx:] if idx != -1 else text
+    regions: list[str] = []
+    search_from = 0
+    while True:
+        idx = text.find(marker, search_from)
+        if idx == -1:
+            break
+        end = text.find("#ifdef __cplusplus", idx + len(marker))
+        regions.append(text[idx:end] if end != -1 else text[idx:])
+        if end == -1:
+            break
+        search_from = end
+    return "\n".join(regions) if regions else text
 
 
 def _iter_named_blocks(text: str, start_re: re.Pattern[str]) -> Iterable[tuple[str, str]]:
@@ -253,15 +287,23 @@ def _extract_structs(text: str) -> dict[str, set[str]]:
     return structs
 
 
-def _iter_llama_api_function_decls(header_text: str) -> Iterable[str]:
+def _iter_public_api_function_decls(header_text: str) -> Iterable[str]:
     # We intentionally scan from LLAMA_API occurrences, because the header uses
     # conditional wrappers (e.g. DEPRECATED(...)). This keeps it robust.
     i = 0
     n = len(header_text)
     while True:
-        idx = header_text.find("LLAMA_API", i)
-        if idx < 0:
+        matches = [
+            match
+            for match in (
+                header_text.find("LLAMA_API", i),
+                header_text.find("MTMD_API", i),
+            )
+            if match >= 0
+        ]
+        if not matches:
             return
+        idx = min(matches)
 
         j = idx
         paren_depth = 0
@@ -349,7 +391,9 @@ def _extract_header_public_functions(header_text: str) -> set[str]:
     header_text = _strip_preprocessor_lines(header_text)
     funcs: set[str] = set()
 
-    for decl in _iter_llama_api_function_decls(header_text):
+    for decl in _iter_public_api_function_decls(header_text):
+        if "std::" in decl or "::" in decl:
+            continue
         name = _decl_to_func_name(decl)
         if name:
             funcs.add(name)
@@ -558,10 +602,17 @@ def _extract_header_function_signatures(header_text: str) -> dict[str, str]:
     header_text = _strip_preprocessor_lines(header_text)
     sigs: dict[str, str] = {}
 
-    for decl in _iter_llama_api_function_decls(header_text):
+    for decl in _iter_public_api_function_decls(header_text):
+        if "std::" in decl or "::" in decl:
+            continue
         decl_one_line = " ".join(decl.replace("\r", "").split())
         decl_one_line = _unwrap_deprecated_decl(decl_one_line)
-        decl_one_line = decl_one_line.replace("LLAMA_API ", "").replace(" LLAMA_API ", " ")
+        decl_one_line = (
+            decl_one_line.replace("LLAMA_API ", "")
+            .replace(" LLAMA_API ", " ")
+            .replace("MTMD_API ", "")
+            .replace(" MTMD_API ", " ")
+        )
 
         for pattern, repl in _SIG_TYPE_REWRITES:
             decl_one_line = re.sub(pattern, repl, decl_one_line)
@@ -658,6 +709,13 @@ def main() -> int:
         help="Path to vendor llama.h (default: vendor/llama.cpp/include/llama.h)",
     )
     parser.add_argument(
+        "--mtmd-header",
+        action="append",
+        type=Path,
+        default=None,
+        help="Path to an mtmd public header (repeat for mtmd.h and mtmd-helper.h)",
+    )
+    parser.add_argument(
         "--bindings",
         type=Path,
         default=None,
@@ -690,6 +748,12 @@ def main() -> int:
         help="Path to the built shared library (default: src/llama_cpp_py_sync/*llama*)",
     )
     parser.add_argument(
+        "--mtmd-lib",
+        type=Path,
+        default=None,
+        help="Path to the built mtmd shared library",
+    )
+    parser.add_argument(
         "--strict",
         action="store_true",
         help="Fail if CFFI contains extra functions not found in the header",
@@ -707,7 +771,11 @@ def main() -> int:
     header_path = args.header or _default_header_path(root)
     bindings_path = args.bindings or _default_cffi_bindings_path(root)
 
-    header_text = header_path.read_text(encoding="utf-8", errors="ignore")
+    header_paths = [header_path]
+    header_paths.extend(args.mtmd_header or _default_mtmd_header_paths(root))
+    header_text = "\n".join(
+        path.read_text(encoding="utf-8", errors="ignore") for path in header_paths if path.exists()
+    )
     bindings_text = bindings_path.read_text(encoding="utf-8", errors="ignore")
     cdef_text = _extract_cdef_text(bindings_text)
 
@@ -720,13 +788,26 @@ def main() -> int:
     missing_exports: list[str] = []
     if args.check_exports:
         lib_path = args.lib or _default_library_path(root)
+        mtmd_lib_path = args.mtmd_lib or _default_mtmd_library_path(root)
         if lib_path is None or not lib_path.exists():
             raise FileNotFoundError(
                 "--check-exports was set, but no built library was found. "
                 "Build first (scripts/build_llama_cpp.py) or pass --lib."
             )
+        if mtmd_lib_path is None or not mtmd_lib_path.exists():
+            raise FileNotFoundError(
+                "--check-exports was set, but no built mtmd library was found. "
+                "Build first (scripts/build_llama_cpp.py) or pass --mtmd-lib."
+            )
         lib = _load_library(lib_path)
-        missing_exports = sorted([fn for fn in header_funcs if not _exported_symbol_exists(lib, fn)])
+        mtmd_lib = _load_library(mtmd_lib_path)
+        missing_exports = sorted(
+            [
+                fn
+                for fn in header_funcs
+                if not _exported_symbol_exists(lib if fn.startswith("llama_") else mtmd_lib, fn)
+            ]
+        )
 
     function_signature_mismatches: dict[str, dict[str, str]] = {}
     if args.check_signatures:

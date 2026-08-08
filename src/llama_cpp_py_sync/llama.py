@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass, field
-from typing import Iterator
+from typing import Any, Callable, Iterator, Mapping, Sequence
 
 from llama_cpp_py_sync._cffi_bindings import get_ffi, get_lib
 
@@ -133,12 +133,14 @@ class Llama:
         if not os.path.exists(model_path):
             raise FileNotFoundError(f"Model file not found: {model_path}")
 
+        self.model_path = str(model_path)
         self._lib = get_lib()
         self._ffi = get_ffi()
         self._model = None
         self._ctx = None
         self._sampler = None
         self._vocab = None
+        self._abort_callback = None
         self._verbose = verbose
         self._embedding = embedding
         self._n_ctx = n_ctx
@@ -330,6 +332,20 @@ class Llama:
     def n_embd(self) -> int:
         """Get embedding dimension."""
         return self._lib.llama_n_embd(self._model)
+
+    @property
+    def capabilities(self) -> dict[str, Any]:
+        """Report text and, after setup, multimodal model capabilities."""
+        multimodal = getattr(self, "_multimodal_capabilities", None)
+        if multimodal is not None:
+            return dict(multimodal)
+        return {
+            "multimodal": False,
+            "modalities": ["text"],
+            "multiple_images": False,
+            "projector_path": None,
+            "projector_type": None,
+        }
 
     @property
     def n_layer(self) -> int:
@@ -525,6 +541,191 @@ class Llama:
                 mem_clear(mem, True)
                 return
 
+    def _configure_generation_sampler(
+        self,
+        temperature: float,
+        top_k: int,
+        top_p: float,
+        min_p: float,
+        repeat_penalty: float,
+        repeat_last_n: int,
+        seed: int | None,
+    ) -> None:
+        """Create the sampler chain used by both text and multimodal requests."""
+        if hasattr(self, "_sampler") and self._sampler is not None:
+            self._lib.llama_sampler_free(self._sampler)
+
+        sampler_params = self._lib.llama_sampler_chain_default_params()
+        self._sampler = self._lib.llama_sampler_chain_init(sampler_params)
+        self._lib.llama_sampler_chain_add(
+            self._sampler,
+            self._lib.llama_sampler_init_penalties(
+                repeat_last_n,
+                repeat_penalty,
+                0.0,
+                0.0,
+            ),
+        )
+        self._lib.llama_sampler_chain_add(
+            self._sampler, self._lib.llama_sampler_init_top_k(top_k)
+        )
+        self._lib.llama_sampler_chain_add(
+            self._sampler, self._lib.llama_sampler_init_top_p(top_p, 1)
+        )
+        self._lib.llama_sampler_chain_add(
+            self._sampler, self._lib.llama_sampler_init_min_p(min_p, 1)
+        )
+        self._lib.llama_sampler_chain_add(
+            self._sampler, self._lib.llama_sampler_init_temp(temperature)
+        )
+        dist_seed = (
+            int.from_bytes(os.urandom(4), "little")
+            if seed is None
+            else (int(seed) & 0xFFFFFFFF)
+        )
+        self._lib.llama_sampler_chain_add(
+            self._sampler, self._lib.llama_sampler_init_dist(dist_seed)
+        )
+
+    def _set_abort_callback(self, cancel_callback: Callable[[], bool] | None) -> None:
+        """Connect cancellation to llama.cpp's native decode abort hook."""
+        setter = getattr(self._lib, "llama_set_abort_callback", None)
+        if setter is None:
+            return
+        self._abort_callback = None
+        if cancel_callback is None:
+            setter(self._ctx, self._ffi.NULL, self._ffi.NULL)
+            return
+
+        def _abort(_data: Any) -> bool:
+            try:
+                return bool(cancel_callback())
+            except BaseException:
+                # Never let a Python exception cross the C callback boundary;
+                # aborting is the safe outcome for a failed cancellation hook.
+                return True
+
+        self._abort_callback = self._ffi.callback(
+            "ggml_abort_callback", _abort
+        )
+        setter(self._ctx, self._abort_callback, self._ffi.NULL)
+
+    def _generate_from_n_past(
+        self,
+        n_past: int,
+        max_tokens: int,
+        stop_sequences: list[str] | None,
+        cancel_callback: Callable[[], bool] | None = None,
+    ) -> Iterator[str]:
+        generated_text = ""
+        for _ in range(max_tokens):
+            if cancel_callback is not None and cancel_callback():
+                raise RuntimeError("Generation was cancelled")
+
+            new_token = self._sample_token()
+            if self._lib.llama_vocab_is_eog(self._vocab, new_token):
+                break
+
+            self._lib.llama_sampler_accept(self._sampler, new_token)
+            piece = self.token_to_piece(new_token)
+            generated_text += piece
+
+            if stop_sequences:
+                stopped_at: int | None = None
+                for stop_seq in stop_sequences:
+                    if stop_seq in generated_text:
+                        stopped_at = generated_text.find(stop_seq)
+                        generated_text = generated_text[:stopped_at]
+                        break
+                if stopped_at is not None:
+                    yield piece
+                    break
+
+            yield piece
+            n_past = self._eval_tokens([new_token], n_past)
+
+    def _format_chat_prompt(
+        self,
+        messages: Sequence[Mapping[str, Any]],
+        multimodal_context: Any = None,
+    ) -> tuple[str, list[tuple[str, bytes]]]:
+        """Format ordered content parts while retaining mtmd markers and images."""
+        if not messages:
+            raise ValueError("messages must not be empty")
+
+        marker = multimodal_context.marker if multimodal_context is not None else ""
+        rendered: list[tuple[str, str]] = []
+        images: list[tuple[str, bytes]] = []
+        for message in messages:
+            if not isinstance(message, Mapping):
+                raise TypeError("Every chat message must be an object")
+            role = message.get("role")
+            if not isinstance(role, str) or not role:
+                raise ValueError("Every chat message requires a non-empty role")
+            content = message.get("content", "")
+            if multimodal_context is None:
+                if isinstance(content, str):
+                    text = content
+                elif isinstance(content, Sequence) and not isinstance(
+                    content, (bytes, bytearray, memoryview)
+                ):
+                    text_parts: list[str] = []
+                    for part in content:
+                        if not isinstance(part, Mapping) or part.get("type") != "text":
+                            raise ValueError(
+                                "Image content requires multimodal_context; request was not downgraded"
+                            )
+                        text = part.get("text")
+                        if not isinstance(text, str):
+                            raise ValueError("Text content parts require a string text field")
+                        text_parts.append(text)
+                    text = "".join(text_parts)
+                else:
+                    raise TypeError("Message content must be text or an ordered content array")
+            else:
+                from llama_cpp_py_sync.multimodal import _normalise_content
+
+                text, payloads = _normalise_content(content, multimodal_context.limits, marker)
+                images.extend((payload.mime_type, payload.data) for payload in payloads)
+            rendered.append((role, text))
+
+        message_array = self._ffi.new("llama_chat_message[]", len(rendered))
+        role_buffers: list[Any] = []
+        content_buffers: list[Any] = []
+        for index, (role, content_text) in enumerate(rendered):
+            role_bytes = role.encode("utf-8")
+            content_bytes = content_text.encode("utf-8")
+            role_buffer = self._ffi.new("char[]", role_bytes)
+            content_buffer = self._ffi.new("char[]", content_bytes)
+            role_buffers.append(role_buffer)
+            content_buffers.append(content_buffer)
+            message_array[index].role = role_buffer
+            message_array[index].content = content_buffer
+
+        template = None
+        if hasattr(self._lib, "llama_model_chat_template"):
+            template = self._lib.llama_model_chat_template(self._model, self._ffi.NULL)
+        if template not in (None, self._ffi.NULL):
+            total_chars = sum(len(item[1].encode("utf-8")) for item in rendered)
+            size = max(256, total_chars * 2 + 256)
+            output = self._ffi.new(f"char[{size}]")
+            result = self._lib.llama_chat_apply_template(
+                template, message_array, len(rendered), True, output, size
+            )
+            if result < 0:
+                size = -int(result)
+                output = self._ffi.new(f"char[{size}]")
+                result = self._lib.llama_chat_apply_template(
+                    template, message_array, len(rendered), True, output, size
+                )
+            if result >= 0:
+                return self._ffi.string(output, result).decode("utf-8", "replace"), images
+
+        # Models without a built-in template still get deterministic role
+        # boundaries.  The exact content-part order is retained above.
+        fallback = "".join(f"{role}: {content}\n" for role, content in rendered)
+        return fallback + "assistant:", images
+
     def generate(
         self,
         prompt: str,
@@ -538,6 +739,7 @@ class Llama:
         stop_sequences: list[str] | None = None,
         stream: bool = False,
         seed: int | None = None,
+        cancel_callback: Callable[[], bool] | None = None,
     ) -> str | Iterator[str]:
         """
         Generate text completion for a prompt.
@@ -559,90 +761,138 @@ class Llama:
             Generated text (or iterator if stream=True).
         """
         self._clear_context_state()
-        self._lib.llama_sampler_reset(self._sampler)
-
-        if hasattr(self, "_sampler") and self._sampler is not None:
-            self._lib.llama_sampler_free(self._sampler)
-
-        sampler_params = self._lib.llama_sampler_chain_default_params()
-        self._sampler = self._lib.llama_sampler_chain_init(sampler_params)
-
-        self._lib.llama_sampler_chain_add(
-            self._sampler,
-            self._lib.llama_sampler_init_penalties(
-                repeat_last_n,
-                repeat_penalty,
-                0.0,
-                0.0,
-            ),
+        self._configure_generation_sampler(
+            temperature,
+            top_k,
+            top_p,
+            min_p,
+            repeat_penalty,
+            repeat_last_n,
+            seed,
         )
-        self._lib.llama_sampler_chain_add(
-            self._sampler,
-            self._lib.llama_sampler_init_top_k(top_k)
-        )
-        self._lib.llama_sampler_chain_add(
-            self._sampler,
-            self._lib.llama_sampler_init_top_p(top_p, 1)
-        )
-        self._lib.llama_sampler_chain_add(
-            self._sampler,
-            self._lib.llama_sampler_init_min_p(min_p, 1)
-        )
-        self._lib.llama_sampler_chain_add(
-            self._sampler,
-            self._lib.llama_sampler_init_temp(temperature)
-        )
-        dist_seed = (
-            int.from_bytes(os.urandom(4), "little")
-            if seed is None
-            else (int(seed) & 0xFFFFFFFF)
-        )
-        self._lib.llama_sampler_chain_add(
-            self._sampler,
-            self._lib.llama_sampler_init_dist(dist_seed),
-        )
-
         tokens = self.tokenize(prompt, add_special=True)
-
         if len(tokens) >= self._n_ctx:
             raise ValueError(f"Prompt too long: {len(tokens)} tokens exceeds context size {self._n_ctx}")
+        self._set_abort_callback(cancel_callback)
 
-        def _generate_tokens():
-            n_past = 0
-            generated_text = ""
-
-            n_past = self._eval_tokens(tokens, n_past)
-
-            for _ in range(max_tokens):
-                new_token = self._sample_token()
-
-                if new_token == self.eos_token:
-                    break
-
-                self._lib.llama_sampler_accept(self._sampler, new_token)
-
-                piece = self.token_to_piece(new_token)
-                generated_text += piece
-
-                if stop_sequences:
-                    stopped_at: int | None = None
-                    for stop_seq in stop_sequences:
-                        if stop_seq in generated_text:
-                            stopped_at = generated_text.find(stop_seq)
-                            generated_text = generated_text[:stopped_at]
-                            break
-                    if stopped_at is not None:
-                        yield piece
-                        break
-
-                yield piece
-
-                n_past = self._eval_tokens([new_token], n_past)
+        def _generate_tokens() -> Iterator[str]:
+            try:
+                n_past = self._eval_tokens(tokens, 0)
+                yield from self._generate_from_n_past(
+                    n_past, max_tokens, stop_sequences, cancel_callback
+                )
+            finally:
+                self._set_abort_callback(None)
 
         if stream:
             return _generate_tokens()
         else:
             return "".join(_generate_tokens())
+
+    def create_chat_completion(
+        self,
+        messages: Sequence[Mapping[str, Any]],
+        *,
+        max_tokens: int = 256,
+        temperature: float = 0.8,
+        top_k: int = 40,
+        top_p: float = 0.95,
+        min_p: float = 0.05,
+        repeat_penalty: float = 1.1,
+        repeat_last_n: int = 64,
+        stop_sequences: list[str] | None = None,
+        stream: bool = False,
+        seed: int | None = None,
+        multimodal_context: Any = None,
+        cancel_callback: Callable[[], bool] | None = None,
+    ) -> dict[str, Any] | Iterator[dict[str, Any]]:
+        """Create a chat completion with ordered text/image content parts.
+
+        Images are accepted only when ``multimodal_context`` is supplied; a
+        failed multimodal request is never silently converted to text-only
+        inference.
+        """
+        if multimodal_context is not None and getattr(multimodal_context, "model", None) is not self:
+            raise ValueError("multimodal_context belongs to a different Llama model")
+
+        def _run() -> Iterator[str]:
+            self._clear_context_state()
+            self._configure_generation_sampler(
+                temperature,
+                top_k,
+                top_p,
+                min_p,
+                repeat_penalty,
+                repeat_last_n,
+                seed,
+            )
+            prompt, images = self._format_chat_prompt(messages, multimodal_context)
+            self._set_abort_callback(cancel_callback)
+            try:
+                if multimodal_context is None:
+                    tokens = self.tokenize(prompt, add_special=True)
+                    if len(tokens) >= self._n_ctx:
+                        raise ValueError(
+                            f"Prompt too long: {len(tokens)} tokens exceeds context size {self._n_ctx}"
+                        )
+                    n_past = self._eval_tokens(tokens, 0)
+                else:
+                    with multimodal_context.tokenize_prompt(
+                        prompt,
+                        images,
+                        cancel_callback=cancel_callback,
+                    ) as tokenized:
+                        n_past = multimodal_context.evaluate_prompt(
+                            tokenized, cancel_callback=cancel_callback
+                        )
+                if n_past + max_tokens >= self._n_ctx:
+                    raise ValueError("Chat request exceeds the model context window")
+                yield from self._generate_from_n_past(
+                    n_past, max_tokens, stop_sequences, cancel_callback
+                )
+            finally:
+                self._set_abort_callback(None)
+
+        if not stream:
+            content = "".join(_run())
+            return {
+                "object": "chat.completion",
+                "choices": [
+                    {
+                        "index": 0,
+                        "message": {"role": "assistant", "content": content},
+                        "finish_reason": "stop",
+                    }
+                ],
+            }
+
+        def _stream() -> Iterator[dict[str, Any]]:
+            first = True
+            for piece in _run():
+                yield {
+                    "object": "chat.completion.chunk",
+                    "choices": [
+                        {
+                            "index": 0,
+                            "delta": {
+                                "role": "assistant" if first else None,
+                                "content": piece,
+                            },
+                            "finish_reason": None,
+                        }
+                    ],
+                }
+                first = False
+            yield {
+                "object": "chat.completion.chunk",
+                "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
+            }
+
+        return _stream()
+
+    def create_multimodal_chat_completion(self, messages: Sequence[Mapping[str, Any]], **kwargs: Any) -> Any:
+        """Explicit alias for :meth:`create_chat_completion` with multimodal messages."""
+        return self.create_chat_completion(messages, **kwargs)
 
     def get_embeddings(self, text: str) -> list[float]:
         """

@@ -138,6 +138,7 @@ jobs:
           
           git add .llama_cpp_sync_state.json
           git add src/llama_cpp_py_sync/_cffi_bindings.py
+          git add src/llama_cpp_py_sync/native_manifest.json
           git add src/llama_cpp_py_sync/_version.py
           
           UPSTREAM_SHORT=$(echo "${{ steps.check.outputs.upstream_sha }}" | cut -c1-8)

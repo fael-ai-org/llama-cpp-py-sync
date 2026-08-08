@@ -18,12 +18,26 @@ from llama_cpp_py_sync.backends import (
 )
 from llama_cpp_py_sync.embeddings import get_embeddings, get_embeddings_batch
 from llama_cpp_py_sync.llama import Llama
+from llama_cpp_py_sync.multimodal import (
+    ImageValidationError,
+    MultimodalCancelledError,
+    MultimodalContext,
+    MultimodalError,
+    MultimodalLimits,
+    ProjectorCompatibilityError,
+)
 
 __all__ = [
     "__version__",
     "__llama_cpp_commit__",
     "__llama_cpp_tag__",
     "Llama",
+    "MultimodalContext",
+    "MultimodalError",
+    "ProjectorCompatibilityError",
+    "ImageValidationError",
+    "MultimodalCancelledError",
+    "MultimodalLimits",
     "get_embeddings",
     "get_embeddings_batch",
     "get_available_backends",

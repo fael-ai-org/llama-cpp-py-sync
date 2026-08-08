@@ -1034,6 +1034,10 @@ def get_cmake_args(
         "-DLLAMA_BUILD_TESTS=OFF",
         "-DLLAMA_BUILD_EXAMPLES=OFF",
         "-DLLAMA_BUILD_SERVER=OFF",
+        "-DLLAMA_BUILD_COMMON=OFF",
+        "-DLLAMA_BUILD_TOOLS=OFF",
+        "-DLLAMA_BUILD_APP=OFF",
+        "-DLLAMA_BUILD_MTMD=ON",
         "-DLLAMA_CURL=OFF",
     ]
 
@@ -1172,9 +1176,33 @@ def find_built_library(build_dir: Path) -> Optional[Path]:
     return None
 
 
+def find_built_mtmd_library(build_dir: Path) -> Optional[Path]:
+    """Find the standalone upstream mtmd shared library."""
+    system = platform.system().lower()
+
+    if system == "windows":
+        patterns = [
+            "**/mtmd.dll",
+            "**/libmtmd.dll",
+            "**/Release/mtmd.dll",
+            "**/bin/mtmd.dll",
+        ]
+    elif system == "darwin":
+        patterns = ["**/libmtmd.dylib", "**/lib/libmtmd.dylib"]
+    else:
+        patterns = ["**/libmtmd.so", "**/lib/libmtmd.so"]
+
+    for pattern in patterns:
+        matches = list(build_dir.glob(pattern))
+        if matches:
+            return matches[0]
+
+    return None
+
+
 def _copy_windows_dependency_dlls(lib_path: Path, package_dir: Path) -> None:
     lib_dir = lib_path.parent
-    patterns = ["ggml*.dll"]
+    patterns = ["ggml*.dll", "llama*.dll", "libllama*.dll"]
 
     copied_any = False
     for pattern in patterns:
@@ -1278,7 +1306,10 @@ def _copy_macos_dependency_dylibs(lib_path: Path, package_dir: Path) -> None:
 
 def _copy_linux_dependency_sos(lib_path: Path, package_dir: Path) -> None:
     lib_dir = lib_path.parent
-    patterns = ["libggml*.so*"]
+    # libmtmd has a SONAME dependency on libllama, while libllama depends on
+    # the ggml backends. Bundle both families so the wheel never relies on a
+    # global llama.cpp installation.
+    patterns = ["libllama*.so*", "libggml*.so*"]
 
     candidate_dirs: list[Path] = [
         lib_dir,
@@ -1305,7 +1336,7 @@ def _copy_linux_dependency_sos(lib_path: Path, package_dir: Path) -> None:
 
     if not copied_any:
         print(
-            "Note: no libggml*.so* dependencies were found next to the built llama shared library. "
+            "Note: no libllama*.so* or libggml*.so* dependencies were found next to the built shared library. "
             "If the packaged libllama.so fails to load on Linux, ensure the build outputs include the ggml shared libraries."
         )
 
@@ -1332,14 +1363,15 @@ def _patch_linux_rpath(package_dir: Path) -> None:
         )
 
 
-def copy_library_to_package(lib_path: Path, package_dir: Path) -> Path:
+def copy_library_to_package(lib_path: Path, package_dir: Path, *, clean: bool = True) -> Path:
     """Copy the built library to the package directory."""
     package_dir.mkdir(parents=True, exist_ok=True)
 
-    for pattern in ["*.dylib", "*.so", "*.so.*", "*.dll", "MoltenVK_icd.json"]:
-        for artifact in package_dir.glob(pattern):
-            if artifact.is_file():
-                artifact.unlink()
+    if clean:
+        for pattern in ["*.dylib", "*.so", "*.so.*", "*.dll", "MoltenVK_icd.json"]:
+            for artifact in package_dir.glob(pattern):
+                if artifact.is_file():
+                    artifact.unlink()
 
     dest_path = package_dir / lib_path.name
     shutil.copy2(lib_path, dest_path)
@@ -1427,7 +1459,7 @@ def build_llama_cpp(
         return None
 
     print("\nBuilding...")
-    if not run_cmake_build(build_dir, parallel=parallel, target="llama"):
+    if not run_cmake_build(build_dir, parallel=parallel, target="mtmd"):
         print("Error: Build failed", file=sys.stderr)
         return None
 
@@ -1441,6 +1473,16 @@ def build_llama_cpp(
     print(f"Found library: {lib_path}")
 
     dest_path = copy_library_to_package(lib_path, output_dir)
+
+    mtmd_path = find_built_mtmd_library(build_dir)
+    if mtmd_path is None:
+        print(
+            "Error: Could not find the standalone mtmd shared library. "
+            "The wheel must contain mtmd for multimodal support.",
+            file=sys.stderr,
+        )
+        return None
+    copy_library_to_package(mtmd_path, output_dir, clean=False)
 
     if _is_windows() and bundle_runtime_dlls:
         _bundle_windows_runtime_dlls(

@@ -34,12 +34,21 @@ struct llama_memory_i;
 typedef struct llama_memory_i * llama_memory_t;
 
 // Opaque ggml types referenced by the llama public API
+struct ggml_tensor;
 typedef void * ggml_threadpool_t;
 typedef void * ggml_backend_dev_t;
 typedef void * ggml_backend_buffer_type_t;
-typedef void * ggml_backend_sched_eval_callback;
-typedef void * ggml_abort_callback;
-typedef void * ggml_log_callback;
+enum ggml_log_level {
+    GGML_LOG_LEVEL_NONE = 0,
+    GGML_LOG_LEVEL_DEBUG = 1,
+    GGML_LOG_LEVEL_INFO = 2,
+    GGML_LOG_LEVEL_WARN = 3,
+    GGML_LOG_LEVEL_ERROR = 4,
+    GGML_LOG_LEVEL_CONT = 5,
+};
+typedef bool (*ggml_backend_sched_eval_callback)(struct ggml_tensor * tensor, bool ask, void * user_data);
+typedef bool (*ggml_abort_callback)(void * data);
+typedef void (*ggml_log_callback)(enum ggml_log_level level, const char * text, void * user_data);
 typedef void * ggml_opt_dataset_t;
 typedef void * ggml_opt_result_t;
 typedef void * ggml_opt_epoch_callback;
@@ -240,8 +249,7 @@ enum llama_load_mode {
     LLAMA_LOAD_MODE_NONE = 0,
     LLAMA_LOAD_MODE_MMAP = 1,
     LLAMA_LOAD_MODE_MLOCK = 2,
-    LLAMA_LOAD_MODE_MMAP_MLOCK = 3,
-    LLAMA_LOAD_MODE_DIRECT_IO = 4,
+    LLAMA_LOAD_MODE_DIRECT_IO = 3,
 };
 
 enum llama_context_type {
@@ -355,7 +363,6 @@ struct llama_model_params {
     bool use_extra_bufts;
     bool no_host;
     bool no_alloc;
-    bool load_mtp;
 };
 
 struct llama_sampler_seq_config {
@@ -760,7 +767,6 @@ llama_token llama_vocab_mask(const struct llama_vocab * vocab);
 bool llama_vocab_get_add_bos(const struct llama_vocab * vocab);
 bool llama_vocab_get_add_eos(const struct llama_vocab * vocab);
 bool llama_vocab_get_add_sep(const struct llama_vocab * vocab);
-const llama_token * llama_vocab_get_suppress_tokens(const struct llama_vocab * vocab, int32_t * n_suppress_tokens);
 llama_token llama_vocab_fim_pre(const struct llama_vocab * vocab);
 llama_token llama_vocab_fim_suf(const struct llama_vocab * vocab);
 llama_token llama_vocab_fim_mid(const struct llama_vocab * vocab);
@@ -918,9 +924,191 @@ void llama_opt_epoch(
             int64_t                   idata_split,
             ggml_opt_epoch_callback   callback_train,
             ggml_opt_epoch_callback   callback_eval);
+typedef struct mtmd_context      mtmd_context;
+typedef struct mtmd_bitmap       mtmd_bitmap;
+typedef struct mtmd_image_tokens mtmd_image_tokens;
+typedef struct mtmd_input_chunk  mtmd_input_chunk;
+typedef struct mtmd_input_chunks mtmd_input_chunks;
+typedef struct mtmd_input_text   mtmd_input_text;
+typedef struct mtmd_batch        mtmd_batch;
+typedef bool (*mtmd_progress_callback)(float progress, void * user_data);
+typedef int(* mtmd_bitmap_lazy_callback)(
+    size_t chunk_idx,
+    void * user_data,
+    mtmd_bitmap ** out_bitmap,
+    char ** out_text);
+enum mtmd_input_chunk_type {
+    MTMD_INPUT_CHUNK_TYPE_TEXT,
+    MTMD_INPUT_CHUNK_TYPE_IMAGE,
+    MTMD_INPUT_CHUNK_TYPE_AUDIO,
+};
+struct mtmd_input_text {
+    const char * text;
+    size_t text_len;
+    bool add_special;
+    bool parse_special;
+};
+
+struct mtmd_context_params {
+    bool use_gpu;
+    bool print_timings;
+    int n_threads;
+    const char * image_marker;
+    const char * media_marker;
+    enum llama_flash_attn_type flash_attn_type;
+    bool warmup;
+    int image_min_tokens;
+    int image_max_tokens;
+    ggml_backend_sched_eval_callback cb_eval;
+    void * cb_eval_user_data;
+    int32_t batch_max_tokens;
+    mtmd_progress_callback progress_callback;
+    void * progress_callback_user_data;
+};
+
+struct mtmd_decoder_pos {
+    uint32_t t;
+    uint32_t x;
+    uint32_t y;
+    uint32_t z;
+};
+
+struct mtmd_caps {
+    bool inp_vision;
+    bool inp_audio;
+};
+const char * mtmd_default_marker(void);
+struct mtmd_context_params mtmd_context_params_default(void);
+mtmd_context * mtmd_init_from_file(const char * mmproj_fname,
+                                            const struct llama_model * text_model,
+                                            const struct mtmd_context_params ctx_params);
+void mtmd_free(mtmd_context * ctx);
+bool mtmd_decode_use_non_causal(const mtmd_context * ctx, const mtmd_input_chunk * chunk);
+bool mtmd_decode_use_mrope(const mtmd_context * ctx);
+bool mtmd_support_vision(const mtmd_context * ctx);
+bool mtmd_support_audio(const mtmd_context * ctx);
+int mtmd_get_audio_sample_rate(const mtmd_context * ctx);
+const char * mtmd_get_marker(const mtmd_context * ctx);
+mtmd_bitmap *         mtmd_bitmap_init           (uint32_t nx, uint32_t ny, const unsigned char * data);
+mtmd_bitmap *         mtmd_bitmap_init_from_audio(size_t n_samples,         const float         * data);
+uint32_t              mtmd_bitmap_get_nx     (const mtmd_bitmap * bitmap);
+uint32_t              mtmd_bitmap_get_ny     (const mtmd_bitmap * bitmap);
+const unsigned char * mtmd_bitmap_get_data   (const mtmd_bitmap * bitmap);
+size_t                mtmd_bitmap_get_n_bytes(const mtmd_bitmap * bitmap);
+bool                  mtmd_bitmap_is_audio   (const mtmd_bitmap * bitmap);
+void                  mtmd_bitmap_free       (mtmd_bitmap * bitmap);
+const char * mtmd_bitmap_get_id(const mtmd_bitmap * bitmap);
+void         mtmd_bitmap_set_id(mtmd_bitmap * bitmap, const char * id);
+mtmd_bitmap * mtmd_bitmap_init_lazy(mtmd_context * ctx,
+                                             const char * id,
+                                             void * user_data,
+                                             mtmd_bitmap_lazy_callback callback);
+mtmd_input_chunks *      mtmd_input_chunks_init(void);
+size_t                   mtmd_input_chunks_size(const mtmd_input_chunks * chunks);
+const mtmd_input_chunk * mtmd_input_chunks_get (const mtmd_input_chunks * chunks, size_t idx);
+void                     mtmd_input_chunks_free(mtmd_input_chunks * chunks);
+enum mtmd_input_chunk_type mtmd_input_chunk_get_type        (const mtmd_input_chunk * chunk);
+const llama_token *        mtmd_input_chunk_get_tokens_text (const mtmd_input_chunk * chunk, size_t * n_tokens_output);
+const mtmd_image_tokens *  mtmd_input_chunk_get_tokens_image(const mtmd_input_chunk * chunk);
+size_t                     mtmd_input_chunk_get_n_tokens    (const mtmd_input_chunk * chunk);
+const char *               mtmd_input_chunk_get_id          (const mtmd_input_chunk * chunk);
+llama_pos                  mtmd_input_chunk_get_n_pos       (const mtmd_input_chunk * chunk);
+mtmd_input_chunk * mtmd_input_chunk_copy(const mtmd_input_chunk * chunk);
+void               mtmd_input_chunk_free(mtmd_input_chunk * chunk);
+size_t       mtmd_image_tokens_get_n_tokens(const mtmd_image_tokens * image_tokens);
+const char * mtmd_image_tokens_get_id      (const mtmd_image_tokens * image_tokens);
+llama_pos    mtmd_image_tokens_get_n_pos   (const mtmd_image_tokens * image_tokens);
+size_t mtmd_image_tokens_get_nx(const mtmd_image_tokens * image_tokens);
+size_t mtmd_image_tokens_get_ny(const mtmd_image_tokens * image_tokens);
+struct mtmd_decoder_pos mtmd_image_tokens_get_decoder_pos(const mtmd_image_tokens * image_tokens, llama_pos pos_0, size_t i);
+int32_t mtmd_tokenize(mtmd_context * ctx,
+                               mtmd_input_chunks * output,
+                               const mtmd_input_text * text,
+                               const mtmd_bitmap ** bitmaps,
+                               size_t n_bitmaps);
+int32_t mtmd_encode(mtmd_context * ctx, const mtmd_image_tokens * image_tokens);
+int32_t mtmd_encode_chunk(mtmd_context * ctx,
+                                   const mtmd_input_chunk * chunk);
+float * mtmd_get_output_embd(mtmd_context * ctx);
+mtmd_batch * mtmd_batch_init(mtmd_context * ctx);
+void         mtmd_batch_free(mtmd_batch * batch);
+int32_t mtmd_batch_add_chunk(mtmd_batch * batch, const mtmd_input_chunk * chunk);
+int32_t mtmd_batch_encode(mtmd_batch * batch);
+float * mtmd_batch_get_output_embd(mtmd_batch * batch, const mtmd_input_chunk * chunk);
+void mtmd_log_set(ggml_log_callback log_callback, void * user_data);
+struct mtmd_caps mtmd_get_cap_from_file(const char * mmproj_fname);
+mtmd_input_chunks * mtmd_test_create_input_chunks(void);
+typedef struct mtmd_helper_video mtmd_helper_video;
+typedef int32_t (*mtmd_helper_post_decode_callback)(struct llama_batch batch, void * user_data);
+struct mtmd_helper_bitmap_wrapper {
+    mtmd_bitmap * bitmap;
+    mtmd_helper_video * video_ctx;
+};
+
+struct mtmd_helper_video_info {
+    uint32_t width;
+    uint32_t height;
+    float    fps;
+    int32_t  n_frames;
+};
+
+struct mtmd_helper_video_init_params {
+    float fps_target;
+    const char * ffmpeg_bin_dir;
+    int64_t timestamp_interval_ms;
+};
+void mtmd_helper_log_set(ggml_log_callback log_callback, void * user_data);
+bool mtmd_helper_support_video(mtmd_context * ctx);
+struct mtmd_helper_bitmap_wrapper mtmd_helper_bitmap_init_from_file(mtmd_context * ctx, const char * fname, bool placeholder);
+struct mtmd_helper_bitmap_wrapper mtmd_helper_bitmap_init_from_buf(mtmd_context * ctx, const unsigned char * buf, size_t len, bool placeholder);
+size_t mtmd_helper_get_n_tokens(const mtmd_input_chunks * chunks);
+llama_pos mtmd_helper_get_n_pos(const mtmd_input_chunks * chunks);
+void mtmd_helper_image_get_decoder_pos(const mtmd_image_tokens * image, llama_pos pos_0, struct mtmd_decoder_pos * out_pos);
+int32_t mtmd_helper_eval_chunks(mtmd_context * ctx,
+                                         struct llama_context * lctx,
+                                         const mtmd_input_chunks * chunks,
+                                         llama_pos n_past,
+                                         llama_seq_id seq_id,
+                                         int32_t n_batch,
+                                         bool logits_last,
+                                         llama_pos * new_n_past);
+int32_t mtmd_helper_eval_chunk_single(mtmd_context * ctx,
+                                               struct llama_context * lctx,
+                                               const mtmd_input_chunk * chunk,
+                                               llama_pos n_past,
+                                               llama_seq_id seq_id,
+                                               int32_t n_batch,
+                                               bool logits_last,
+                                               llama_pos * new_n_past);
+int32_t mtmd_helper_decode_image_chunk(mtmd_context * ctx,
+                                                struct llama_context * lctx,
+                                                const mtmd_input_chunk * chunk,
+                                                float * encoded_embd,
+                                                llama_pos n_past,
+                                                llama_seq_id seq_id,
+                                                int32_t n_batch,
+                                                llama_pos * new_n_past,
+                                                mtmd_helper_post_decode_callback callback,
+                                                void * user_data);
+struct mtmd_helper_video_init_params mtmd_helper_video_init_params_default(void);
+mtmd_helper_video * mtmd_helper_video_init(
+                    struct mtmd_context * mctx,
+                    const char * path,
+                    struct mtmd_helper_video_init_params params);
+mtmd_helper_video * mtmd_helper_video_init_from_buf(
+                    struct mtmd_context * mctx,
+                    const unsigned char * buf, size_t len,
+                    struct mtmd_helper_video_init_params params);
+void mtmd_helper_video_free(mtmd_helper_video * ctx);
+struct mtmd_helper_video_info mtmd_helper_video_get_info(const mtmd_helper_video * ctx);
+int32_t mtmd_helper_video_read_next(mtmd_helper_video * ctx,
+            mtmd_bitmap ** out_bitmap,
+            char ** out_text);
 """
 
 ffi.cdef(_LLAMA_H_CDEF)
+
+MTMD_REQUIRED_SYMBOLS = ('mtmd_default_marker', 'mtmd_context_params_default', 'mtmd_init_from_file', 'mtmd_free', 'mtmd_decode_use_non_causal', 'mtmd_decode_use_mrope', 'mtmd_support_vision', 'mtmd_support_audio', 'mtmd_get_audio_sample_rate', 'mtmd_get_marker', 'mtmd_bitmap_init', 'mtmd_bitmap_init_from_audio', 'mtmd_bitmap_get_nx', 'mtmd_bitmap_get_ny', 'mtmd_bitmap_get_data', 'mtmd_bitmap_get_n_bytes', 'mtmd_bitmap_is_audio', 'mtmd_bitmap_free', 'mtmd_bitmap_get_id', 'mtmd_bitmap_set_id', 'mtmd_bitmap_init_lazy', 'mtmd_input_chunks_init', 'mtmd_input_chunks_size', 'mtmd_input_chunks_get', 'mtmd_input_chunks_free', 'mtmd_input_chunk_get_type', 'mtmd_input_chunk_get_tokens_text', 'mtmd_input_chunk_get_tokens_image', 'mtmd_input_chunk_get_n_tokens', 'mtmd_input_chunk_get_id', 'mtmd_input_chunk_get_n_pos', 'mtmd_input_chunk_copy', 'mtmd_input_chunk_free', 'mtmd_image_tokens_get_n_tokens', 'mtmd_image_tokens_get_id', 'mtmd_image_tokens_get_n_pos', 'mtmd_image_tokens_get_nx', 'mtmd_image_tokens_get_ny', 'mtmd_image_tokens_get_decoder_pos', 'mtmd_tokenize', 'mtmd_encode', 'mtmd_encode_chunk', 'mtmd_get_output_embd', 'mtmd_batch_init', 'mtmd_batch_free', 'mtmd_batch_add_chunk', 'mtmd_batch_encode', 'mtmd_batch_get_output_embd', 'mtmd_log_set', 'mtmd_get_cap_from_file', 'mtmd_test_create_input_chunks', 'mtmd_helper_log_set', 'mtmd_helper_support_video', 'mtmd_helper_bitmap_init_from_file', 'mtmd_helper_bitmap_init_from_buf', 'mtmd_helper_get_n_tokens', 'mtmd_helper_get_n_pos', 'mtmd_helper_image_get_decoder_pos', 'mtmd_helper_eval_chunks', 'mtmd_helper_eval_chunk_single', 'mtmd_helper_decode_image_chunk', 'mtmd_helper_video_init_params_default', 'mtmd_helper_video_init', 'mtmd_helper_video_init_from_buf', 'mtmd_helper_video_free', 'mtmd_helper_video_get_info', 'mtmd_helper_video_read_next')
 
 
 def _find_library():
@@ -973,6 +1161,50 @@ def _find_library():
     return None
 
 
+def _find_mtmd_library():
+    """Find the mtmd shared library bundled with this package."""
+    lib_dir = Path(__file__).parent
+    system = platform.system().lower()
+
+    if system == "windows":
+        lib_names = ["mtmd.dll", "libmtmd.dll"]
+    elif system == "darwin":
+        lib_names = ["libmtmd.dylib", "libmtmd.so"]
+    else:
+        lib_names = ["libmtmd.so"]
+
+    for lib_name in lib_names:
+        lib_path = lib_dir / lib_name
+        if lib_path.exists():
+            return str(lib_path)
+
+    env_path = os.environ.get("LLAMA_CPP_MTMD_LIB")
+    if env_path and os.path.exists(env_path):
+        return env_path
+
+    return None
+
+
+def _configure_runtime_for_library(lib_path):
+    """Configure dependent-library lookup without changing global stdout behavior."""
+    if platform.system().lower() == "windows":
+        lib_dir = str(Path(lib_path).parent)
+        try:
+            if hasattr(os, "add_dll_directory"):
+                os.add_dll_directory(lib_dir)
+        except Exception:
+            pass
+        try:
+            os.environ["PATH"] = lib_dir + os.pathsep + os.environ.get("PATH", "")
+        except Exception:
+            pass
+    elif platform.system().lower() == "darwin":
+        lib_dir = Path(lib_path).parent
+        icd_path = lib_dir / "MoltenVK_icd.json"
+        if icd_path.exists() and not os.environ.get("VK_ICD_FILENAMES"):
+            os.environ["VK_ICD_FILENAMES"] = str(icd_path)
+
+
 def _load_library():
     """Load the llama shared library."""
     lib_path = _find_library()
@@ -984,29 +1216,38 @@ def _load_library():
         )
 
     try:
-        if platform.system().lower() == "windows":
-            lib_dir = str(Path(lib_path).parent)
-            try:
-                if hasattr(os, "add_dll_directory"):
-                    os.add_dll_directory(lib_dir)
-            except Exception:
-                pass
-            try:
-                os.environ["PATH"] = lib_dir + os.pathsep + os.environ.get("PATH", "")
-            except Exception:
-                pass
-        elif platform.system().lower() == "darwin":
-            lib_dir = Path(lib_path).parent
-            icd_path = lib_dir / "MoltenVK_icd.json"
-            if icd_path.exists() and not os.environ.get("VK_ICD_FILENAMES"):
-                os.environ["VK_ICD_FILENAMES"] = str(icd_path)
-
+        _configure_runtime_for_library(lib_path)
         return ffi.dlopen(lib_path)
     except OSError as e:
         raise RuntimeError(f"Failed to load llama.cpp library from {lib_path}: {e}") from e
 
 
+def _load_mtmd_library():
+    """Load and fail closed if the bundled mtmd ABI is incomplete."""
+    lib_path = _find_mtmd_library()
+    if lib_path is None:
+        raise RuntimeError(
+            "Could not find the mtmd shared library bundled with llama.cpp. "
+            "Install a multimodal-enabled wheel or set LLAMA_CPP_MTMD_LIB explicitly."
+        )
+
+    try:
+        _configure_runtime_for_library(lib_path)
+        lib = ffi.dlopen(lib_path)
+    except OSError as e:
+        raise RuntimeError(f"Failed to load mtmd from {lib_path}: {e}") from e
+
+    missing = [name for name in MTMD_REQUIRED_SYMBOLS if not hasattr(lib, name)]
+    if missing:
+        raise RuntimeError(
+            "Installed mtmd library is incompatible with the generated bindings; "
+            "missing required symbols: " + ", ".join(missing)
+        )
+    return lib
+
+
 _lib = None
+_mtmd_lib = None
 
 
 def get_lib():
@@ -1015,6 +1256,42 @@ def get_lib():
     if _lib is None:
         _lib = _load_library()
     return _lib
+
+
+def get_mtmd_lib():
+    """Get the separately packaged mtmd library after ABI validation."""
+    global _mtmd_lib
+    if _mtmd_lib is None:
+        # Load llama first because libmtmd links against the same in-package ABI.
+        get_lib()
+        _mtmd_lib = _load_mtmd_library()
+    return _mtmd_lib
+
+
+def get_binding_health(require_mtmd=False):
+    """Return native-library health information without exposing diagnostics."""
+    health = {"llama": False, "mtmd": False, "missing_mtmd_symbols": []}
+    try:
+        get_lib()
+        health["llama"] = True
+    except RuntimeError:
+        if require_mtmd:
+            raise
+        return health
+
+    try:
+        get_mtmd_lib()
+        health["mtmd"] = True
+    except RuntimeError as exc:
+        if require_mtmd:
+            raise
+        message = str(exc)
+        if "missing required symbols:" in message:
+            health["missing_mtmd_symbols"] = [
+                item.strip() for item in message.split("missing required symbols:", 1)[1].split(",")
+                if item.strip()
+            ]
+    return health
 
 
 def get_ffi():

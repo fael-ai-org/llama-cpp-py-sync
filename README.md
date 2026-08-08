@@ -20,6 +20,7 @@
 - Backend-specific wheels published to GitHub Releases: Linux CUDA (12.2) and Vulkan, Windows CUDA (12.4) and Vulkan, macOS Apple Silicon Metal, macOS Intel Vulkan (MoltenVK)
 - CI checks that the generated CFFI surface matches the upstream C API (functions, structs, enums, and signatures)
 - A small, explicit Python API (`Llama.generate`, `tokenize`, `get_embeddings`, etc.)
+- Upstream `mtmd` multimodal support for vision-language GGUF models
 
 ### What You Get (and What You Don’t)
 
@@ -145,6 +146,63 @@ llm.close()
 with llama.Llama("model.gguf", n_gpu_layers=35) as llm:
     print(llm.generate("Once upon a time"))
 ```
+
+## Multimodal vision
+
+Vision-language inference uses the current upstream `mtmd` C API. The language
+model and projector remain separate files; pass the projector explicitly or
+let the package discover the first matching file beside the model in this
+order: `{model-stem}-mmproj.gguf`, `{model-stem}.mmproj.gguf`,
+`mmproj-{model-stem}.gguf`, `mmproj.gguf`.
+
+```python
+from llama_cpp_py_sync import Llama
+from llama_cpp_py_sync.multimodal import MultimodalContext
+
+image_bytes = open("photo.png", "rb").read()
+
+with Llama("model.gguf", n_ctx=4096, n_gpu_layers=35) as model:
+    with MultimodalContext(model, projector_path="mmproj.gguf") as multimodal:
+        print(multimodal.capabilities)
+        response = model.create_chat_completion(
+            messages=[{
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "Describe this image."},
+                    {"type": "input_image", "mime_type": "image/png", "data": image_bytes},
+                ],
+            }],
+            multimodal_context=multimodal,
+        )
+        print(response["choices"][0]["message"]["content"])
+```
+
+`image_url` accepts only validated local data URLs such as
+`data:image/png;base64,...`; HTTP and HTTPS URLs are rejected and must be
+downloaded and validated by the caller. Image count, encoded bytes, dimensions,
+and total pixels are bounded by `MultimodalLimits`. Text and images are
+evaluated in their original order, and streamed calls return the same
+OpenAI-compatible chunk shape as `create_chat_completion(..., stream=True)`.
+
+Multimodal contexts expose `capabilities` with `multimodal`, `modalities`,
+`multiple_images`, `projector_path`, `projector_type`, and decoder properties.
+Projectors are validated by `mtmd_init_from_file` against the loaded language
+model before a request begins; incompatible or corrupt projectors raise
+`ProjectorCompatibilityError`.
+
+The generated binding banner records the exact llama.cpp revision
+`2b63e0610bbc2be990ae1360d5256efcdc3f9efb` and the CFFI surface includes
+`tools/mtmd/mtmd.h` and `mtmd-helper.h`. Wheels contain `libllama`, `libmtmd`,
+and their `libggml-*` dependencies (or the platform equivalents); a wheel
+missing the required `mtmd` ABI fails closed when `MultimodalContext` is
+created. Existing text-only `Llama` requests do not require a projector.
+
+For existing `Llama` users, `generate()` and its string streaming iterator are
+unchanged. Chat users can continue using text-only `create_chat_completion()`;
+adding images requires an explicit `MultimodalContext`, so invalid or
+incompatible multimodal inputs cannot silently fall back to text inference.
+The bundled ABI and native-library inventory are recorded in
+`src/llama_cpp_py_sync/native_manifest.json` and the third-party notices.
 
 ### Embeddings
 

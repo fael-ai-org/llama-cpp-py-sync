@@ -8,6 +8,7 @@ file that can be used to interface with the llama.cpp shared library.
 """
 
 import argparse
+import json
 import re
 from datetime import datetime
 from pathlib import Path
@@ -44,6 +45,12 @@ def find_header_files(vendor_path: Path) -> dict:
     ggml_opt_h = vendor_path / "ggml" / "include" / "ggml-opt.h"
     if ggml_opt_h.exists():
         headers["ggml-opt.h"] = ggml_opt_h
+
+    mtmd_dir = vendor_path / "tools" / "mtmd"
+    for name in ("mtmd.h", "mtmd-helper.h"):
+        path = mtmd_dir / name
+        if path.exists():
+            headers[name] = path
 
     return headers
 
@@ -133,6 +140,7 @@ def preprocess_header(content: str) -> str:
     content = re.sub(r'#\s*warning[^\n]*\n', '', content)
 
     content = re.sub(r'LLAMA_API\s+', '', content)
+    content = re.sub(r'MTMD_API\s+', '', content)
     content = re.sub(r'GGML_API\s+', '', content)
     content = re.sub(r'__attribute__\s*\(\([^)]*\)\)', '', content)
     content = re.sub(r'__declspec\s*\([^)]*\)', '', content)
@@ -362,15 +370,36 @@ def _typedef_name(typedef_stmt: str) -> Optional[str]:
 
 
 def extract_functions(content: str) -> List[str]:
-    """Extract function declarations from header content."""
-    functions = []
+    """Extract top-level function declarations from preprocessed C content."""
+    functions: list[str] = []
+    statement_start = 0
+    paren_depth = 0
+    brace_depth = 0
 
-    func_pattern = r'^[\w\s\*]+\s+(\w+)\s*\([^)]*\)\s*;'
+    for index, char in enumerate(content):
+        if char == "(":
+            paren_depth += 1
+        elif char == ")":
+            paren_depth = max(0, paren_depth - 1)
+        elif char == "{":
+            brace_depth += 1
+        elif char == "}":
+            brace_depth = max(0, brace_depth - 1)
+        elif char == ";" and paren_depth == 0 and brace_depth == 0:
+            statement = content[statement_start : index + 1].strip()
+            statement_start = index + 1
+            if not statement or statement.startswith("typedef "):
+                continue
+            if "(" not in statement or ")" not in statement:
+                continue
+            if "{" in statement or "}" in statement:
+                continue
 
-    for match in re.finditer(func_pattern, content, re.MULTILINE):
-        func_decl = match.group(0).strip()
-        if not func_decl.startswith('typedef'):
-            functions.append(func_decl)
+            # The C++-only memory-usage declaration is intentionally not part
+            # of the ABI surface generated for CFFI.
+            if "std::" in statement or "::" in statement:
+                continue
+            functions.append(statement)
 
     return functions
 
@@ -417,12 +446,21 @@ struct llama_memory_i;
 typedef struct llama_memory_i * llama_memory_t;
 
 // Opaque ggml types referenced by the llama public API
+struct ggml_tensor;
 typedef void * ggml_threadpool_t;
 typedef void * ggml_backend_dev_t;
 typedef void * ggml_backend_buffer_type_t;
-typedef void * ggml_backend_sched_eval_callback;
-typedef void * ggml_abort_callback;
-typedef void * ggml_log_callback;
+enum ggml_log_level {
+    GGML_LOG_LEVEL_NONE = 0,
+    GGML_LOG_LEVEL_DEBUG = 1,
+    GGML_LOG_LEVEL_INFO = 2,
+    GGML_LOG_LEVEL_WARN = 3,
+    GGML_LOG_LEVEL_ERROR = 4,
+    GGML_LOG_LEVEL_CONT = 5,
+};
+typedef bool (*ggml_backend_sched_eval_callback)(struct ggml_tensor * tensor, bool ask, void * user_data);
+typedef bool (*ggml_abort_callback)(void * data);
+typedef void (*ggml_log_callback)(enum ggml_log_level level, const char * text, void * user_data);
 typedef void * ggml_opt_dataset_t;
 typedef void * ggml_opt_result_t;
 typedef void * ggml_opt_epoch_callback;
@@ -544,6 +582,48 @@ typedef void * ggml_opt_epoch_callback;
         if functions:
             cdef_parts.append("\n".join(functions))
 
+    # mtmd is a separate upstream shared library, but its public declarations
+    # are part of the same ABI contract.  They are intentionally parsed from
+    # the exact bundled headers instead of being copied into this generator.
+    for header_name in ("mtmd.h", "mtmd-helper.h"):
+        header_path = headers.get(header_name)
+        if header_path is None:
+            continue
+        with open(header_path, encoding="utf-8", errors="ignore") as f:
+            content = preprocess_header(f.read())
+
+        typedefs = extract_typedefs(content)
+        if typedefs:
+            seen_typedef_names: set[str] = set()
+            filtered_typedefs: list[str] = []
+            for td in typedefs:
+                name = _typedef_name(td)
+                if name and name in prelude_typedef_names:
+                    continue
+                if name and name in seen_typedef_names:
+                    continue
+                if name:
+                    seen_typedef_names.add(name)
+                filtered_typedefs.append(td)
+            if filtered_typedefs:
+                cdef_parts.append("\n".join(filtered_typedefs))
+
+        enums = extract_enums(content)
+        if enums:
+            cdef_parts.append("\n\n".join(enums))
+
+        structs = extract_structs(content)
+        if structs:
+            cdef_parts.append("\n\n".join(structs))
+
+        named_structs = extract_named_struct_decls(content)
+        if named_structs:
+            cdef_parts.append("\n\n".join(named_structs))
+
+        functions = extract_functions(content)
+        if functions:
+            cdef_parts.append("\n".join(functions))
+
     return "\n".join(cdef_parts)
 
 
@@ -558,6 +638,19 @@ def generate_bindings_file(
     headers = find_header_files(vendor_path)
 
     cdef_text = generate_cdef(headers) if headers else ""
+
+    mtmd_symbols: list[str] = []
+    for header_name in ("mtmd.h", "mtmd-helper.h"):
+        header_path = headers.get(header_name)
+        if header_path is None:
+            continue
+        with open(header_path, encoding="utf-8", errors="ignore") as f:
+            mtmd_content = preprocess_header(f.read())
+        for declaration in extract_functions(mtmd_content):
+            before = declaration.split("(", 1)[0]
+            identifiers = re.findall(r"[A-Za-z_][A-Za-z0-9_]*", before)
+            if identifiers and identifiers[-1] not in mtmd_symbols:
+                mtmd_symbols.append(identifiers[-1])
 
     if not headers:
         print("Warning: No header files found in vendor directory")
@@ -586,6 +679,8 @@ _LLAMA_H_CDEF = """
 """
 
 ffi.cdef(_LLAMA_H_CDEF)
+
+MTMD_REQUIRED_SYMBOLS = {mtmd_required_symbols}
 
 
 def _find_library():
@@ -638,6 +733,50 @@ def _find_library():
     return None
 
 
+def _find_mtmd_library():
+    """Find the mtmd shared library bundled with this package."""
+    lib_dir = Path(__file__).parent
+    system = platform.system().lower()
+
+    if system == "windows":
+        lib_names = ["mtmd.dll", "libmtmd.dll"]
+    elif system == "darwin":
+        lib_names = ["libmtmd.dylib", "libmtmd.so"]
+    else:
+        lib_names = ["libmtmd.so"]
+
+    for lib_name in lib_names:
+        lib_path = lib_dir / lib_name
+        if lib_path.exists():
+            return str(lib_path)
+
+    env_path = os.environ.get("LLAMA_CPP_MTMD_LIB")
+    if env_path and os.path.exists(env_path):
+        return env_path
+
+    return None
+
+
+def _configure_runtime_for_library(lib_path):
+    """Configure dependent-library lookup without changing global stdout behavior."""
+    if platform.system().lower() == "windows":
+        lib_dir = str(Path(lib_path).parent)
+        try:
+            if hasattr(os, "add_dll_directory"):
+                os.add_dll_directory(lib_dir)
+        except Exception:
+            pass
+        try:
+            os.environ["PATH"] = lib_dir + os.pathsep + os.environ.get("PATH", "")
+        except Exception:
+            pass
+    elif platform.system().lower() == "darwin":
+        lib_dir = Path(lib_path).parent
+        icd_path = lib_dir / "MoltenVK_icd.json"
+        if icd_path.exists() and not os.environ.get("VK_ICD_FILENAMES"):
+            os.environ["VK_ICD_FILENAMES"] = str(icd_path)
+
+
 def _load_library():
     """Load the llama shared library."""
     lib_path = _find_library()
@@ -649,29 +788,38 @@ def _load_library():
         )
 
     try:
-        if platform.system().lower() == "windows":
-            lib_dir = str(Path(lib_path).parent)
-            try:
-                if hasattr(os, "add_dll_directory"):
-                    os.add_dll_directory(lib_dir)
-            except Exception:
-                pass
-            try:
-                os.environ["PATH"] = lib_dir + os.pathsep + os.environ.get("PATH", "")
-            except Exception:
-                pass
-        elif platform.system().lower() == "darwin":
-            lib_dir = Path(lib_path).parent
-            icd_path = lib_dir / "MoltenVK_icd.json"
-            if icd_path.exists() and not os.environ.get("VK_ICD_FILENAMES"):
-                os.environ["VK_ICD_FILENAMES"] = str(icd_path)
-
+        _configure_runtime_for_library(lib_path)
         return ffi.dlopen(lib_path)
     except OSError as e:
         raise RuntimeError(f"Failed to load llama.cpp library from {{lib_path}}: {{e}}") from e
 
 
+def _load_mtmd_library():
+    """Load and fail closed if the bundled mtmd ABI is incomplete."""
+    lib_path = _find_mtmd_library()
+    if lib_path is None:
+        raise RuntimeError(
+            "Could not find the mtmd shared library bundled with llama.cpp. "
+            "Install a multimodal-enabled wheel or set LLAMA_CPP_MTMD_LIB explicitly."
+        )
+
+    try:
+        _configure_runtime_for_library(lib_path)
+        lib = ffi.dlopen(lib_path)
+    except OSError as e:
+        raise RuntimeError(f"Failed to load mtmd from {{lib_path}}: {{e}}") from e
+
+    missing = [name for name in MTMD_REQUIRED_SYMBOLS if not hasattr(lib, name)]
+    if missing:
+        raise RuntimeError(
+            "Installed mtmd library is incompatible with the generated bindings; "
+            "missing required symbols: " + ", ".join(missing)
+        )
+    return lib
+
+
 _lib = None
+_mtmd_lib = None
 
 
 def get_lib():
@@ -680,6 +828,42 @@ def get_lib():
     if _lib is None:
         _lib = _load_library()
     return _lib
+
+
+def get_mtmd_lib():
+    """Get the separately packaged mtmd library after ABI validation."""
+    global _mtmd_lib
+    if _mtmd_lib is None:
+        # Load llama first because libmtmd links against the same in-package ABI.
+        get_lib()
+        _mtmd_lib = _load_mtmd_library()
+    return _mtmd_lib
+
+
+def get_binding_health(require_mtmd=False):
+    """Return native-library health information without exposing diagnostics."""
+    health = {{"llama": False, "mtmd": False, "missing_mtmd_symbols": []}}
+    try:
+        get_lib()
+        health["llama"] = True
+    except RuntimeError:
+        if require_mtmd:
+            raise
+        return health
+
+    try:
+        get_mtmd_lib()
+        health["mtmd"] = True
+    except RuntimeError as exc:
+        if require_mtmd:
+            raise
+        message = str(exc)
+        if "missing required symbols:" in message:
+            health["missing_mtmd_symbols"] = [
+                item.strip() for item in message.split("missing required symbols:", 1)[1].split(",")
+                if item.strip()
+            ]
+    return health
 
 
 def get_ffi():
@@ -694,6 +878,7 @@ def get_ffi():
         timestamp=timestamp,
         commit_sha=commit_sha,
         cdef_text=cdef_text,
+        mtmd_required_symbols=repr(tuple(mtmd_symbols)),
     )
 
     output_content = "\n".join(line.rstrip() for line in output_content.splitlines()) + "\n"
@@ -701,6 +886,29 @@ def get_ffi():
     output_path.parent.mkdir(parents=True, exist_ok=True)
     with open(output_path, "w", encoding="utf-8") as f:
         f.write(output_content)
+
+    manifest_path = output_path.parent / "native_manifest.json"
+    manifest = {
+        "llama_cpp_commit": commit_sha,
+        "mtmd_abi": "tools/mtmd/mtmd.h and tools/mtmd/mtmd-helper.h C API",
+        "libraries": {
+            "core": "libllama",
+            "multimodal": "libmtmd",
+            "dependencies": "libggml-*",
+        },
+        "backend_variants": ["cpu", "metal", "cuda", "vulkan"],
+        "platform_names": {
+            "linux": ["libllama.so*", "libmtmd.so*", "libggml-*.so*"],
+            "macos": ["libllama*.dylib", "libmtmd*.dylib", "libggml-*.dylib"],
+            "windows": ["*llama*.dll", "*mtmd*.dll", "ggml-*.dll"],
+        },
+        "sbom_components": [
+            {"name": "llama.cpp", "license": "MIT"},
+            {"name": "stb_image", "license": "Public Domain"},
+            {"name": "miniaudio", "license": "Public Domain or MIT-0"},
+        ],
+    }
+    manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
 
     print(f"Generated bindings at: {output_path}")
 

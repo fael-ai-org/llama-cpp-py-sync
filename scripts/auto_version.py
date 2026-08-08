@@ -69,8 +69,8 @@ def _version_from_upstream_tag(tag: str) -> Optional[str]:
     # llama.cpp historically uses tags like b4512. Map these to a PEP 440 version.
     if tag.startswith("b"):
         num = tag[1:]
-        if num.isdigit():
-            return f"0.{int(num)}"
+        if _PLAIN_NUMERIC_VERSION_RE.match(num):
+            return f"0.{num}"
         return None
 
     # Semver-like tags are often prefixed with "v".

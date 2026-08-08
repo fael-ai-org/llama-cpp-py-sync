@@ -49,8 +49,23 @@ jobs:
             if [ -n "${UPSTREAM_SHA}" ]; then
               UPSTREAM_TAG_EXISTS="true"
             else
-              # Local-only tag; don't publish a Release/PyPI for it.
-              UPSTREAM_SHA=$(git ls-remote ${{ env.LLAMA_CPP_REPO }} HEAD | cut -f1)
+              # Allow numeric hotfix tags such as b10330.1 to publish a
+              # corrected build against the matching upstream base tag.
+              BASE_TAG="${UPSTREAM_TAG%%.*}"
+              if [ "${BASE_TAG}" != "${UPSTREAM_TAG}" ]; then
+                BASE_SHA=$(git ls-remote --tags --refs ${{ env.LLAMA_CPP_REPO }} "refs/tags/${BASE_TAG}" | cut -f1)
+                if [ -n "${BASE_SHA}" ]; then
+                  UPSTREAM_TAG="${BASE_TAG}"
+                  UPSTREAM_SHA="${BASE_SHA}"
+                  UPSTREAM_TAG_EXISTS="true"
+                else
+                  # Local-only tag without a matching upstream base.
+                  UPSTREAM_SHA=$(git ls-remote ${{ env.LLAMA_CPP_REPO }} HEAD | cut -f1)
+                fi
+              else
+                # Local-only tag; don't publish a Release/PyPI for it.
+                UPSTREAM_SHA=$(git ls-remote ${{ env.LLAMA_CPP_REPO }} HEAD | cut -f1)
+              fi
             fi
           else
             UPSTREAM_SHA=$(git ls-remote ${{ env.LLAMA_CPP_REPO }} HEAD | cut -f1)

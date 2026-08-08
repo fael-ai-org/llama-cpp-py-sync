@@ -560,6 +560,7 @@ class Llama:
         self._lib.llama_sampler_chain_add(
             self._sampler,
             self._lib.llama_sampler_init_penalties(
+                self.n_vocab,
                 repeat_last_n,
                 repeat_penalty,
                 0.0,

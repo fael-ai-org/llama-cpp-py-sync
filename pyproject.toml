@@ -112,6 +112,9 @@ ignore_missing_imports = true
 testpaths = ["tests"]
 python_files = ["test_*.py"]
 python_functions = ["test_*"]
+markers = [
+    "integration: requires a local GGUF model supplied through LLAMA_TEST_MODEL",
+]
 
 [tool.llama_cpp_py_sync.ci]
 build_python = "3.13.13"

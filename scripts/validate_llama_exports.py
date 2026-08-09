@@ -6,6 +6,7 @@ import platform
 import re
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 
@@ -93,6 +94,30 @@ def _require_symbol(lib: ctypes.CDLL, name: str) -> None:
         raise RuntimeError(f"Missing required export: {name}") from e
 
 
+def _validate_penalties_sampler_cffi(project_root: Path) -> None:
+    """Construct and free a sampler through the generated CFFI declaration.
+
+    This detects an ABI mismatch between ``_cffi_bindings.py`` and the native
+    library.  It deliberately uses the package loader rather than ctypes so
+    the same call path used by users is validated for every wheel backend.
+    """
+    src_dir = project_root / "src"
+    if str(src_dir) not in sys.path:
+        sys.path.insert(0, str(src_dir))
+
+    from llama_cpp_py_sync._cffi_bindings import get_ffi, get_lib
+
+    ffi = get_ffi()
+    llama = get_lib()
+    sampler = llama.llama_sampler_init_penalties(128, 64, 1.1, 0.0, 0.0)
+    try:
+        if sampler == ffi.NULL:
+            raise RuntimeError("llama_sampler_init_penalties returned NULL")
+    finally:
+        if sampler != ffi.NULL:
+            llama.llama_sampler_free(sampler)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Validate llama.cpp shared library exports")
     parser.add_argument(
@@ -146,7 +171,6 @@ def main() -> int:
             ]
             if missing_mtmd:
                 raise RuntimeError(f"Missing required mtmd export(s): {', '.join(missing_mtmd)}")
-            return 0
 
     lib = _load_library(lib_path)
     for sym in required:
@@ -163,6 +187,8 @@ def main() -> int:
         "mtmd_helper_eval_chunk_single",
     ]:
         _require_symbol(mtmd, sym)
+
+    _validate_penalties_sampler_cffi(root)
 
     return 0
 

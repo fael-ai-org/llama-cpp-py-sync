@@ -114,6 +114,7 @@ python_files = ["test_*.py"]
 python_functions = ["test_*"]
 markers = [
     "integration: requires a local GGUF model supplied through LLAMA_TEST_MODEL",
+    "native: requires a built or installed llama.cpp shared library",
 ]
 
 [tool.llama_cpp_py_sync.ci]

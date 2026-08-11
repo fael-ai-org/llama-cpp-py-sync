@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import platform
 from dataclasses import dataclass
+from pathlib import Path
 
 from llama_cpp_py_sync._cffi_bindings import get_ffi, get_lib
 
@@ -41,6 +42,21 @@ def _check_backend_from_system_info(system_info: str) -> dict[str, bool]:
     }
 
 
+def _check_bundled_backend_libraries() -> dict[str, bool]:
+    """Detect packaged backends when upstream system info only lists CPU features."""
+    library_names = [path.name.lower() for path in Path(__file__).parent.iterdir()]
+
+    def has_fragment(*fragments: str) -> bool:
+        return any(any(fragment in name for fragment in fragments) for name in library_names)
+
+    return {
+        "cuda": has_fragment("ggml-cuda"),
+        "metal": has_fragment("ggml-metal"),
+        "vulkan": has_fragment("ggml-vulkan"),
+        "rocm": has_fragment("ggml-hip", "ggml-rocm"),
+    }
+
+
 def get_backend_info() -> BackendInfo:
     """
     Get comprehensive information about available backends.
@@ -60,6 +76,9 @@ def get_backend_info() -> BackendInfo:
     system_info = ffi.string(system_info_ptr).decode("utf-8")
 
     backends = _check_backend_from_system_info(system_info)
+    packaged_backends = _check_bundled_backend_libraries()
+    for backend, available in packaged_backends.items():
+        backends[backend] = backends[backend] or available
 
     return BackendInfo(
         cuda=backends["cuda"],

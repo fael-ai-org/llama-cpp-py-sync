@@ -332,6 +332,20 @@ def _patch_macos_package_dylibs(package_dir: Path) -> None:
             )
 
 
+def _codesign_macos_package_dylibs(package_dir: Path) -> None:
+    """Restore valid ad-hoc signatures after install_name_tool changes."""
+    for dylib in sorted(p for p in package_dir.glob("*.dylib") if p.is_file()):
+        result = subprocess.run(
+            ["codesign", "--force", "--sign", "-", str(dylib)],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if result.returncode != 0:
+            detail = (result.stderr or result.stdout or "unknown codesign error").strip()
+            raise RuntimeError(f"Failed to ad-hoc sign {dylib.name}: {detail}")
+
+
 def _bundle_macos_vulkan_runtime(
     package_dir: Path,
     backends: Dict[str, Tuple[bool, Optional[str]]],
@@ -343,6 +357,7 @@ def _bundle_macos_vulkan_runtime(
     vulkan_count = _copy_vulkan_runtime_dylibs(package_dir)
     icd_ok = _bundle_macos_vulkan_icd(package_dir)
     _patch_macos_package_dylibs(package_dir)
+    _codesign_macos_package_dylibs(package_dir)
 
     if vulkan_count == 0:
         print(
@@ -1044,14 +1059,11 @@ def get_cmake_args(
     if platform.system() == "Linux":
         args.append("-DCMAKE_BUILD_WITH_INSTALL_RPATH=ON")
 
-    # When producing distributable wheels in CI, never compile with -march=native
-    # (GGML_NATIVE=ON). GitHub runners may support instructions (e.g. AVX512) that
-    # are not available on end-user CPUs, leading to runtime "Illegal instruction"
-    # crashes.
-    if os.environ.get("GITHUB_ACTIONS") == "true" and not any(
-        a.startswith("-DGGML_NATIVE=") for a in args
-    ):
-        args.append("-DGGML_NATIVE=OFF")
+    # Wheels are distributable artifacts, so never optimize them for the build
+    # machine. GGML_NATIVE=ON may emit instructions unavailable on older user
+    # CPUs and cause an "Illegal instruction" crash. Keep this explicit for
+    # local release builds as well as CI builds.
+    args.append("-DGGML_NATIVE=OFF")
 
     if enable_cuda and backends["cuda"][0]:
         args.append("-DGGML_CUDA=ON")

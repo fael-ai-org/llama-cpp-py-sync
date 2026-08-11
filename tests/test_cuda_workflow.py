@@ -1,6 +1,5 @@
 from pathlib import Path
 
-
 WORKFLOW = Path(__file__).resolve().parents[1] / ".github" / "workflows" / "build.yml"
 
 
@@ -25,3 +24,14 @@ def test_windows_cuda_runtime_dlls_are_discovered_by_pattern() -> None:
         "nvJitLink64_*.dll",
     ):
         assert pattern in workflow
+
+
+def test_macos_arm64_vulkan_wheel_is_built_and_released() -> None:
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+
+    assert "build-macos-arm64-vulkan:" in workflow
+    assert "runs-on: macos-14" in workflow
+    assert "brew install cmake ninja molten-vk vulkan-loader vulkan-headers shaderc" in workflow
+    assert "macosx_14_0_arm64 --build 1vulkan" in workflow
+    assert "name: wheel-macos-arm64-vulkan" in workflow
+    assert "build-macos-arm64-vulkan, build-macos-x86_64" in workflow

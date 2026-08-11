@@ -1,0 +1,27 @@
+from pathlib import Path
+
+
+WORKFLOW = Path(__file__).resolve().parents[1] / ".github" / "workflows" / "build.yml"
+
+
+def test_workflow_uses_one_broad_cuda_128_configuration() -> None:
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+
+    assert workflow.count("cuda: '12.8.0'") == 2
+    assert "cuda: '12.2.0'" not in workflow
+    assert "cuda: '12.4.1'" not in workflow
+    assert workflow.count("CMAKE_CUDA_ARCHITECTURES: '50;52;60;61;70;75;80;86;89;90;100;120'") == 2
+    assert "1cu128" in workflow
+
+
+def test_windows_cuda_runtime_dlls_are_discovered_by_pattern() -> None:
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+
+    for pattern in (
+        "cudart64_*.dll",
+        "cublas64_*.dll",
+        "cublasLt64_*.dll",
+        "nvrtc64_*.dll",
+        "nvJitLink64_*.dll",
+    ):
+        assert pattern in workflow

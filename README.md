@@ -17,7 +17,7 @@
 - Automatic upstream sync and binding regeneration
 - Prebuilt wheels built by CI
 - CPU wheels published to PyPI
-- Backend-specific wheels published to GitHub Releases: Linux CUDA (12.2) and Vulkan, Windows CUDA (12.4) and Vulkan, macOS Apple Silicon Metal, macOS Intel Vulkan (MoltenVK)
+- Backend-specific wheels published to GitHub Releases: one broad CUDA 12.8 wheel per Linux/Windows platform, Linux and Windows Vulkan, macOS Apple Silicon Metal, and macOS Intel Vulkan (MoltenVK)
 - CI checks that the generated CFFI surface matches the upstream C API (functions, structs, enums, and signatures)
 - A small, explicit Python API (`Llama.generate`, `tokenize`, `get_embeddings`, etc.)
 - Upstream `mtmd` multimodal support for vision-language GGUF models
@@ -371,6 +371,11 @@ The build system automatically detects available backends:
 | Metal | macOS | Xcode SDK |
 | Vulkan | Linux, Windows, macOS (Intel) | `VULKAN_SDK`, Homebrew (`vulkan-loader`, `molten-vk`), or system headers |
 | BLAS | All | OpenBLAS, MKL, or Accelerate |
+
+CUDA release wheels use CUDA 12.8 and compile native targets for Maxwell through
+Blackwell (`50;52;60;61;70;75;80;86;89;90;100;120`). This is the single modern
+CUDA package line; users do not need a matching CUDA toolkit installed, but do
+need an NVIDIA driver compatible with the bundled CUDA runtime.
 
 ### Runtime Configuration
 

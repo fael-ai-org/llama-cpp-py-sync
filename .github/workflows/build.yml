@@ -285,7 +285,7 @@ jobs:
       - name: Install CUDA Toolkit
         uses: Jimver/cuda-toolkit@v0.2.29
         with:
-          cuda: '12.2.0'
+          cuda: '12.8.0'
           method: 'network'
 
       - name: Install system dependencies
@@ -376,6 +376,7 @@ jobs:
           CUDA_HOME: ${{ steps.cuda_libs.outputs.cuda_root }}
           CUDA_PATH: ${{ steps.cuda_libs.outputs.cuda_root }}
           LLAMA_CPP_CUDA_LIB_DIRS: ${{ steps.cuda_libs.outputs.cuda_lib_dirs }}
+          CMAKE_CUDA_ARCHITECTURES: '50;52;60;61;70;75;80;86;89;90;100;120'
         run: |
           python scripts/build_llama_cpp.py --no-rocm --no-vulkan --no-metal --parallel 2
 
@@ -432,7 +433,7 @@ jobs:
           python -m pip install --upgrade wheel
           ORIGINAL_WHEELS=$(ls dist/*.whl)
           for w in $ORIGINAL_WHEELS; do
-            python -m wheel tags --platform-tag manylinux2014_x86_64 --build 1cuda "$w"
+            python -m wheel tags --platform-tag manylinux2014_x86_64 --build 1cu128 "$w"
           done
           rm -f $ORIGINAL_WHEELS
 
@@ -445,7 +446,7 @@ jobs:
       - name: Upload wheel
         uses: actions/upload-artifact@v4
         with:
-          name: wheel-linux-x86_64-cuda
+          name: wheel-linux-x86_64-cuda-cu128
           path: dist/*.whl
 
   build-linux-x86_64-vulkan:
@@ -960,7 +961,7 @@ jobs:
       - name: Install CUDA Toolkit
         uses: Jimver/cuda-toolkit@v0.2.29
         with:
-          cuda: '12.4.1'
+          cuda: '12.8.0'
           method: 'network'
 
       - name: Install dependencies
@@ -989,6 +990,8 @@ jobs:
           python scripts/gen_bindings.py --commit-sha $sha
       
       - name: Build llama.cpp with CUDA
+        env:
+          CMAKE_CUDA_ARCHITECTURES: '50;52;60;61;70;75;80;86;89;90;100;120'
         run: |
           python scripts/build_llama_cpp.py --no-rocm --no-vulkan --no-metal --parallel 2
 
@@ -1027,17 +1030,7 @@ jobs:
             'vcruntime140_1.dll',
             'msvcp140.dll',
             'concrt140.dll',
-            'vcomp140.dll',
-
-            # CUDA runtime
-            'cudart64_12.dll',
-            'cublas64_12.dll',
-            'cublasLt64_12.dll',
-            'cudnn64_8.dll',
-            'nvrtc64_120_0.dll',
-            # CUDA 12+ JIT/link dependencies (often required for loading)
-            'nvJitLink64_12.dll',
-            'nvrtc-builtins64_120.dll'
+            'vcomp140.dll'
           )
 
           function Copy-DllIfFound([string]$path) {
@@ -1074,8 +1067,6 @@ jobs:
             $searchDirs += (Join-Path $env:CUDA_PATH 'bin')
             $searchDirs += (Join-Path $env:CUDA_PATH 'lib')
           }
-          $searchDirs += 'C:\\Program Files\\NVIDIA GPU Computing Toolkit\\CUDA\\v12.4\\bin'
-          $searchDirs += 'C:\\Program Files\\NVIDIA GPU Computing Toolkit\\CUDA\\v12.4\\lib'
           $searchDirs += 'C:\\Program Files\\NVIDIA Corporation\\NvToolsExt\\bin\\x64'
 
           $searchDirs = $searchDirs | Where-Object { $_ -and (Test-Path $_) } | Select-Object -Unique
@@ -1091,11 +1082,22 @@ jobs:
             }
           }
 
-          # CUDA minor versions can change helper DLL suffixes; opportunistically bundle any matching variants.
+          # Bundle the selected CUDA toolkit's versioned runtime DLLs without
+          # hard-coding minor-version filenames.
           if ($env:CUDA_PATH) {
             $cudaBin = Join-Path $env:CUDA_PATH 'bin'
             if (Test-Path $cudaBin) {
-              $wildcards = @('nvJitLink64_*.dll', 'nvrtc-builtins64_*.dll')
+              $wildcards = @(
+                'cudart64_*.dll',
+                'cublas64_*.dll',
+                'cublasLt64_*.dll',
+                'cusparse64_*.dll',
+                'cusolver64_*.dll',
+                'curand64_*.dll',
+                'nvrtc64_*.dll',
+                'nvrtc-builtins64_*.dll',
+                'nvJitLink64_*.dll'
+              )
               foreach ($wc in $wildcards) {
                 $matches = Get-ChildItem -Path $cudaBin -Filter $wc -ErrorAction SilentlyContinue
                 foreach ($m in $matches) {
@@ -1113,8 +1115,20 @@ jobs:
           }
 
       - name: Validate llama.cpp exports
+        shell: pwsh
         run: |
-          python scripts/validate_llama_exports.py
+          $nvcuda = Join-Path $env:WINDIR 'System32\nvcuda.dll'
+          if (Test-Path $nvcuda) {
+            python scripts/validate_llama_exports.py
+          } else {
+            $llamaDll = Get-ChildItem src\llama_cpp_py_sync -Filter llama.dll | Select-Object -First 1
+            if (-not $llamaDll) { throw 'llama.dll was not packaged' }
+            $exports = dumpbin /exports $llamaDll.FullName | Out-String
+            foreach ($symbol in @('llama_backend_init', 'llama_model_load_from_file')) {
+              if ($exports -notmatch $symbol) { throw "Missing required export: $symbol" }
+            }
+            Write-Host 'Static CUDA wheel export validation passed (runner has no NVIDIA driver).'
+          }
       
       - name: Generate version
         run: |
@@ -1131,7 +1145,7 @@ jobs:
           $wheels = Get-ChildItem -Path dist -Filter *.whl
           if (-not $wheels) { throw "No wheels found in dist/" }
           foreach ($w in $wheels) {
-            python -m wheel tags --platform-tag win_amd64 --build 1cuda $w.FullName
+            python -m wheel tags --platform-tag win_amd64 --build 1cu128 $w.FullName
           }
           foreach ($w in $wheels) { Remove-Item -Force $w.FullName }
 
@@ -1195,7 +1209,7 @@ jobs:
       - name: Upload wheel
         uses: actions/upload-artifact@v4
         with:
-          name: wheel-windows-x64-cuda
+          name: wheel-windows-x64-cuda-cu128
           path: dist/*win_amd64.whl
 
   build-windows-x64-vulkan:

@@ -94,8 +94,9 @@ CMakeFiles/
 cmake_install.cmake
 Makefile
 
-# Ephemeral wheels from scripts/run_tests.py and scripts/run_local_ci.py
-test_temp/dist/
+# Ephemeral local test artifacts
+test_temp/*
+!test_temp/.gitkeep
 
 # Native build outputs under src (avoid committing built binaries)
 src/llama_cpp_py_sync/*.dll

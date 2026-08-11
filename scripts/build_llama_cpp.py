@@ -16,7 +16,7 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Set, Tuple
 
 _HOMEBREW_INSTALL_URL = "https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh"
 
@@ -128,8 +128,8 @@ def _brew_prefix(formula: str) -> Optional[Path]:
     return path if path.exists() else None
 
 
-def _macos_vulkan_library_dirs() -> list[Path]:
-    dirs: list[Path] = []
+def _macos_vulkan_library_dirs() -> List[Path]:
+    dirs: List[Path] = []
 
     vulkan_sdk = os.environ.get("VULKAN_SDK")
     if vulkan_sdk:
@@ -148,8 +148,8 @@ def _macos_vulkan_library_dirs() -> list[Path]:
     return dirs
 
 
-def _macos_vulkan_icd_candidates() -> list[Path]:
-    candidates: list[Path] = []
+def _macos_vulkan_icd_candidates() -> List[Path]:
+    candidates: List[Path] = []
 
     vulkan_sdk = os.environ.get("VULKAN_SDK")
     if vulkan_sdk:
@@ -180,7 +180,7 @@ def _macos_vulkan_icd_candidates() -> list[Path]:
     return candidates
 
 
-def _macos_vulkan_dylib_patterns() -> list[str]:
+def _macos_vulkan_dylib_patterns() -> List[str]:
     return ["libvulkan*.dylib", "libMoltenVK*.dylib"]
 
 
@@ -208,7 +208,7 @@ def _copy_vulkan_runtime_dlls(package_dir: Path) -> int:
 
 def _copy_vulkan_runtime_dylibs(package_dir: Path) -> int:
     copied = 0
-    seen: set[str] = set()
+    seen: Set[str] = set()
 
     for lib_dir in _macos_vulkan_library_dirs():
         for pattern in _macos_vulkan_dylib_patterns():
@@ -267,7 +267,7 @@ def _bundle_macos_vulkan_icd(package_dir: Path) -> bool:
         return False
 
 
-def _otool_load_commands(dylib: Path) -> list[str]:
+def _otool_load_commands(dylib: Path) -> List[str]:
     try:
         result = subprocess.run(
             ["otool", "-L", str(dylib)],
@@ -281,7 +281,7 @@ def _otool_load_commands(dylib: Path) -> list[str]:
     if result.returncode != 0:
         return []
 
-    deps: list[str] = []
+    deps: List[str] = []
     for line in (result.stdout or "").splitlines()[1:]:
         line = line.strip()
         if not line:
@@ -451,7 +451,7 @@ def _copy_linux_runtime_so(src: Path, dst_dir: Path) -> bool:
         return False
 
 
-def _append_unique_dir(dirs: list[Path], path: Path) -> None:
+def _append_unique_dir(dirs: List[Path], path: Path) -> None:
     if not path.exists() or not path.is_dir():
         return
     if path in dirs:
@@ -459,15 +459,15 @@ def _append_unique_dir(dirs: list[Path], path: Path) -> None:
     dirs.append(path)
 
 
-def _linux_cuda_library_dirs() -> list[Path]:
-    dirs: list[Path] = []
+def _linux_cuda_library_dirs() -> List[Path]:
+    dirs: List[Path] = []
 
     for env_key in ["LLAMA_CPP_CUDA_LIB_DIRS", "LLAMA_CPP_EXTRA_LIB_DIRS", "LD_LIBRARY_PATH"]:
         for raw_path in os.environ.get(env_key, "").split(os.pathsep):
             if raw_path:
                 _append_unique_dir(dirs, Path(raw_path))
 
-    cuda_roots: list[Path] = []
+    cuda_roots: List[Path] = []
     for raw_root in [os.environ.get("CUDA_HOME"), os.environ.get("CUDA_PATH")]:
         if raw_root:
             cuda_roots.append(Path(raw_root))
@@ -478,7 +478,7 @@ def _linux_cuda_library_dirs() -> list[Path]:
 
     cuda_roots.extend([Path("/usr/local/cuda"), Path("/usr/cuda")])
 
-    seen_roots: list[Path] = []
+    seen_roots: List[Path] = []
     for root in cuda_roots:
         if root in seen_roots:
             continue
@@ -522,7 +522,7 @@ def _copy_linux_cuda_runtime_sos(package_dir: Path) -> int:
     # (libcuda.so.1) is provided by the host and must not be bundled.
     wanted_prefixes = ("libcu", "libnv")
     copied = 0
-    seen: set[str] = set()
+    seen: Set[str] = set()
 
     for line in output.splitlines():
         m = re.match(r"\s*(?P<name>[^\s]+)\s+=>\s+(?P<target>[^\s]+)", line)
@@ -652,7 +652,7 @@ def _is_windows() -> bool:
     return platform.system().lower() == "windows"
 
 
-def _run_and_capture_env(cmd: list[str], cwd: Path | None = None) -> dict[str, str]:
+def _run_and_capture_env(cmd: List[str], cwd: Optional[Path] = None) -> Dict[str, str]:
     result = subprocess.run(cmd, cwd=str(cwd) if cwd else None, capture_output=True, text=True)
     if result.returncode != 0:
         stderr = (result.stderr or "").strip()
@@ -660,7 +660,7 @@ def _run_and_capture_env(cmd: list[str], cwd: Path | None = None) -> dict[str, s
         msg = stderr or stdout or f"Command failed: {' '.join(cmd)}"
         raise RuntimeError(msg)
 
-    env: dict[str, str] = {}
+    env: Dict[str, str] = {}
     for line in (result.stdout or "").splitlines():
         if "=" not in line:
             continue
@@ -838,7 +838,7 @@ def _install_homebrew() -> bool:
     return res.returncode == 0 and _find_brew() is not None
 
 
-def _brew_install(packages: list[str]) -> bool:
+def _brew_install(packages: List[str]) -> bool:
     brew = _find_brew()
     if brew is None:
         return False
@@ -852,7 +852,7 @@ def _maybe_install_macos_build_tools(auto_install: bool) -> None:
     if not _is_macos():
         return
 
-    missing: list[str] = []
+    missing: List[str] = []
     if shutil.which("cmake") is None:
         missing.append("cmake")
     if shutil.which("ninja") is None:
@@ -1234,14 +1234,14 @@ def _copy_windows_dependency_dlls(lib_path: Path, package_dir: Path) -> None:
         )
 
 
-def _run_install_name_tool(args: list[str]) -> None:
+def _run_install_name_tool(args: List[str]) -> None:
     try:
         subprocess.run(["install_name_tool", *args], check=False, capture_output=True, text=True)
     except FileNotFoundError:
         return
 
 
-def _run_patchelf(args: list[str]) -> bool:
+def _run_patchelf(args: List[str]) -> bool:
     patchelf = shutil.which("patchelf")
     if not patchelf:
         for candidate in [
@@ -1268,7 +1268,7 @@ def _copy_macos_dependency_dylibs(lib_path: Path, package_dir: Path) -> None:
 
     # Some builds (notably Metal) may place dependent dylibs in a nearby output
     # directory rather than next to libllama.dylib.
-    candidate_dirs: list[Path] = [
+    candidate_dirs: List[Path] = [
         lib_dir,
         lib_dir.parent,
         lib_dir.parent / "lib",
@@ -1276,7 +1276,7 @@ def _copy_macos_dependency_dylibs(lib_path: Path, package_dir: Path) -> None:
     ]
     candidate_dirs = [p for p in candidate_dirs if p.exists()]
 
-    copied: list[Path] = []
+    copied: List[Path] = []
     for pattern in patterns:
         for search_dir in candidate_dirs:
             for dep_path in search_dir.glob(pattern):
@@ -1291,12 +1291,12 @@ def _copy_macos_dependency_dylibs(lib_path: Path, package_dir: Path) -> None:
     # dylibs that were freshly copied, which left libllama.dylib still pointing
     # at @rpath dependencies inside built wheels.
     primary = package_dir / lib_path.name
-    dylibs_to_patch: list[Path] = []
+    dylibs_to_patch: List[Path] = []
     if primary.exists():
         dylibs_to_patch.append(primary)
     dylibs_to_patch.extend(copied)
 
-    bundled_deps: list[Path] = []
+    bundled_deps: List[Path] = []
     for pattern in patterns:
         bundled_deps.extend(package_dir.glob(pattern))
 
@@ -1323,7 +1323,7 @@ def _copy_linux_dependency_sos(lib_path: Path, package_dir: Path) -> None:
     # global llama.cpp installation.
     patterns = ["libllama*.so*", "libggml*.so*"]
 
-    candidate_dirs: list[Path] = [
+    candidate_dirs: List[Path] = [
         lib_dir,
         lib_dir.parent,
         lib_dir.parent / "lib",

@@ -35,3 +35,10 @@ def test_macos_arm64_vulkan_wheel_is_built_and_released() -> None:
     assert "macosx_14_0_arm64 --build 1vulkan" in workflow
     assert "name: wheel-macos-arm64-vulkan" in workflow
     assert "build-macos-arm64-vulkan, build-macos-x86_64" in workflow
+
+
+def test_vulkan_smoke_tests_do_not_require_runner_gpu_hardware() -> None:
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+
+    assert workflow.count("assert info.vulkan, info") == 4
+    assert "info.vulkan and info.gpu_offload" not in workflow

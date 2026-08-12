@@ -437,6 +437,19 @@ jobs:
           done
           rm -f $ORIGINAL_WHEELS
 
+      - name: Enforce GitHub release size limit
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          limit = 2 * 1024 * 1024 * 1024
+          for wheel in Path("dist").glob("*.whl"):
+              size = wheel.stat().st_size
+              print(f"{wheel.name}: {size:,} bytes")
+              if size >= limit:
+                  raise SystemExit(f"{wheel.name} exceeds GitHub's 2 GiB release-asset limit")
+          PY
+
       - name: Smoke test installed wheel
         run: |
           python -m pip install --upgrade pip

@@ -401,51 +401,20 @@ def _copy_cuda_runtime_dlls(package_dir: Path) -> int:
     return copied
 
 
-def _copy_runtime_so(src: Path, dst_dir: Path) -> bool:
-    if not src.exists() or not src.is_file():
-        return False
-    dst = dst_dir / src.name
-    try:
-        shutil.copy2(src, dst)
-    except Exception:
-        return False
-    return True
-
-
-def _ensure_linux_symlink(dst: Path, target_name: str) -> bool:
-    try:
-        if dst.exists() or dst.is_symlink():
-            return True
-        os.symlink(target_name, dst)
-        return True
-    except Exception:
-        return False
-
-
-def _copy_linux_runtime_so(src: Path, dst_dir: Path) -> bool:
+def _copy_linux_runtime_so(src: Path, dst_dir: Path, *, runtime_name: Optional[str] = None) -> bool:
+    """Copy one physical library under the name requested by the runtime loader."""
     if not src.exists() or not (src.is_file() or src.is_symlink()):
         return False
 
-    dst = dst_dir / src.name
+    dst = dst_dir / (runtime_name or src.name)
     if dst.exists() or dst.is_symlink():
         return True
 
-    if src.is_symlink():
-        try:
-            target_path = src.resolve(strict=True)
-        except Exception:
-            return False
-
-        if not target_path.is_file():
-            return False
-
-        if not _copy_linux_runtime_so(target_path, dst_dir):
-            return False
-
-        return _ensure_linux_symlink(dst, target_path.name)
-
     try:
-        shutil.copy2(src, dst)
+        # copy2 follows a source symlink and writes one regular file. Wheels do
+        # not reliably preserve symlinks, so packaging both the symlink and its
+        # target would materialize duplicate multi-gigabyte payloads.
+        shutil.copy2(src.resolve(strict=True), dst)
         return True
     except Exception:
         return False
@@ -546,15 +515,11 @@ def _copy_linux_cuda_runtime_sos(package_dir: Path) -> int:
         if not src.exists():
             continue
 
-        key = src.name.lower()
+        key = name.lower()
         if key not in seen:
             seen.add(key)
-            if _copy_linux_runtime_so(src, package_dir):
+            if _copy_linux_runtime_so(src, package_dir, runtime_name=name):
                 copied += 1
-
-        # Ensure the dependency name exists in the package dir as a symlink when it differs.
-        if name != src.name:
-            _ensure_linux_symlink(package_dir / name, src.name)
 
     return copied
 
@@ -1331,26 +1296,61 @@ def _copy_linux_dependency_sos(lib_path: Path, package_dir: Path) -> None:
     ]
     candidate_dirs = [p for p in candidate_dirs if p.exists()]
 
-    copied_any = False
+    candidates_by_target: Dict[Path, List[Path]] = {}
     for pattern in patterns:
         for search_dir in candidate_dirs:
             for dep_path in search_dir.glob(pattern):
                 if dep_path.name == lib_path.name:
                     continue
-
-                dest_path = package_dir / dep_path.name
-                if dest_path.exists():
+                try:
+                    target = dep_path.resolve(strict=True)
+                except Exception:
                     continue
+                if not target.is_file():
+                    continue
+                aliases = candidates_by_target.setdefault(target, [])
+                if dep_path not in aliases:
+                    aliases.append(dep_path)
 
-                shutil.copy2(dep_path, dest_path)
-                copied_any = True
-                print(f"Copied {dep_path} to {dest_path}")
+    copied_any = False
+    for target, aliases in candidates_by_target.items():
+        soname = _linux_shared_library_soname(target)
+        matching_alias = next((path for path in aliases if path.name == soname), None)
+        source = matching_alias or target
+        runtime_name = soname or _preferred_linux_library_name(aliases)
+        if _copy_linux_runtime_so(source, package_dir, runtime_name=runtime_name):
+            copied_any = True
+            print(f"Copied {target} to {package_dir / runtime_name}")
 
     if not copied_any:
         print(
             "Note: no libllama*.so* or libggml*.so* dependencies were found next to the built shared library. "
             "If the packaged libllama.so fails to load on Linux, ensure the build outputs include the ggml shared libraries."
         )
+
+
+def _linux_shared_library_soname(path: Path) -> Optional[str]:
+    patchelf = shutil.which("patchelf")
+    if patchelf:
+        result = subprocess.run(
+            [patchelf, "--print-soname", str(path)],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        soname = (result.stdout or "").strip()
+        if result.returncode == 0 and soname:
+            return soname
+    return None
+
+
+def _preferred_linux_library_name(aliases: List[Path]) -> str:
+    names = sorted({path.name for path in aliases}, key=lambda name: (len(name), name))
+    abi_names = [name for name in names if re.search(r"\.so\.\d+$", name)]
+    if abi_names:
+        return abi_names[0]
+    unversioned = [name for name in names if name.endswith(".so")]
+    return unversioned[0] if unversioned else names[0]
 
 
 def _patch_linux_rpath(package_dir: Path) -> None:

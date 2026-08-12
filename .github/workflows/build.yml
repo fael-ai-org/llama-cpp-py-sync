@@ -9,6 +9,30 @@ on:
         description: 'Force rebuild even if no upstream changes'
         required: false
         default: 'false'
+        type: choice
+        options: ['false', 'true']
+      build_target:
+        description: 'Build all wheels or one specific target'
+        required: false
+        default: 'all'
+        type: choice
+        options:
+          - all
+          - linux-x86_64-cpu
+          - linux-x86_64-cuda
+          - linux-x86_64-vulkan
+          - macos-arm64-metal
+          - macos-arm64-vulkan
+          - macos-x86_64-cpu
+          - macos-x86_64-vulkan
+          - windows-x64-cpu
+          - windows-x64-cuda
+          - windows-x64-vulkan
+      release_tag:
+        description: 'Existing or new release tag to receive rebuilt wheels (for example b10380)'
+        required: false
+        default: ''
+        type: string
 
 env:
   LLAMA_CPP_REPO: https://github.com/ggml-org/llama.cpp.git
@@ -23,6 +47,9 @@ jobs:
       upstream_tag_exists: ${{ steps.check.outputs.upstream_tag_exists }}
       latest_upstream_tag: ${{ steps.check.outputs.latest_upstream_tag }}
       latest_upstream_tag_sha: ${{ steps.check.outputs.latest_upstream_tag_sha }}
+      build_target: ${{ steps.check.outputs.build_target }}
+      release_tag: ${{ steps.check.outputs.release_tag }}
+      publish_release: ${{ steps.check.outputs.publish_release }}
     steps:
       - uses: actions/checkout@v4
 
@@ -37,14 +64,37 @@ jobs:
           EVENT_NAME="${{ github.event_name }}"
           REF_TYPE="${{ github.ref_type }}"
           REF_NAME="${{ github.ref_name }}"
+          BUILD_TARGET="${{ github.event.inputs.build_target || 'all' }}"
+          RELEASE_TAG_INPUT="${{ github.event.inputs.release_tag || '' }}"
+
+          if [ "${EVENT_NAME}" = "workflow_dispatch" ] && \
+             [ "${BUILD_TARGET}" != "all" ] && [ -z "${RELEASE_TAG_INPUT}" ]; then
+            echo "release_tag is required when building a specific target" >&2
+            exit 1
+          fi
+
+          RELEASE_TAG=""
+          if [ "${REF_TYPE}" = "tag" ]; then
+            RELEASE_TAG="${REF_NAME}"
+          elif [ -n "${RELEASE_TAG_INPUT}" ]; then
+            RELEASE_TAG="${RELEASE_TAG_INPUT}"
+          fi
+
+          echo "build_target=${BUILD_TARGET}" >> $GITHUB_OUTPUT
+          echo "release_tag=${RELEASE_TAG}" >> $GITHUB_OUTPUT
+          if [ -n "${RELEASE_TAG}" ]; then
+            echo "publish_release=true" >> $GITHUB_OUTPUT
+          else
+            echo "publish_release=false" >> $GITHUB_OUTPUT
+          fi
 
           # If this workflow is running for a tag, prefer building against the upstream tag SHA *if it exists upstream*.
           # Otherwise, build against upstream HEAD.
           UPSTREAM_TAG=""
           UPSTREAM_TAG_EXISTS="false"
 
-          if [ "${REF_TYPE}" = "tag" ] && [ -n "${REF_NAME}" ]; then
-            UPSTREAM_TAG="${REF_NAME}"
+          if [ -n "${RELEASE_TAG}" ]; then
+            UPSTREAM_TAG="${RELEASE_TAG}"
             UPSTREAM_SHA=$(git ls-remote --tags --refs ${{ env.LLAMA_CPP_REPO }} "refs/tags/${UPSTREAM_TAG}" | cut -f1)
             if [ -n "${UPSTREAM_SHA}" ]; then
               UPSTREAM_TAG_EXISTS="true"
@@ -100,6 +150,7 @@ jobs:
           
           # Build only for tag pushes, or manual workflow_dispatch when force_rebuild=true.
           if [ "${{ github.event.inputs.force_rebuild }}" == "true" ] || \
+             [ "${BUILD_TARGET}" != "all" ] || [ -n "${RELEASE_TAG_INPUT}" ] || \
              [ "${REF_TYPE}" = "tag" ]; then
             echo "should_build=true" >> $GITHUB_OUTPUT
           else
@@ -200,7 +251,7 @@ jobs:
 
   build-linux-x86_64:
     needs: [check-upstream, validate-bindings]
-    if: needs.check-upstream.outputs.should_build == 'true'
+    if: needs.check-upstream.outputs.should_build == 'true' && (needs.check-upstream.outputs.build_target == 'all' || needs.check-upstream.outputs.build_target == 'linux-x86_64-cpu')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -272,7 +323,7 @@ jobs:
 
   build-linux-x86_64-cuda:
     needs: [check-upstream, validate-bindings]
-    if: needs.check-upstream.outputs.should_build == 'true'
+    if: needs.check-upstream.outputs.should_build == 'true' && (needs.check-upstream.outputs.build_target == 'all' || needs.check-upstream.outputs.build_target == 'linux-x86_64-cuda')
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
@@ -464,7 +515,7 @@ jobs:
 
   build-linux-x86_64-vulkan:
     needs: [check-upstream, validate-bindings]
-    if: needs.check-upstream.outputs.should_build == 'true'
+    if: needs.check-upstream.outputs.should_build == 'true' && (needs.check-upstream.outputs.build_target == 'all' || needs.check-upstream.outputs.build_target == 'linux-x86_64-vulkan')
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
@@ -537,7 +588,7 @@ jobs:
 
   build-macos-arm64:
     needs: [check-upstream, validate-bindings]
-    if: needs.check-upstream.outputs.should_build == 'true'
+    if: needs.check-upstream.outputs.should_build == 'true' && (needs.check-upstream.outputs.build_target == 'all' || needs.check-upstream.outputs.build_target == 'macos-arm64-metal')
     runs-on: macos-14
     steps:
       - uses: actions/checkout@v4
@@ -608,7 +659,7 @@ jobs:
 
   build-macos-arm64-vulkan:
     needs: [check-upstream, validate-bindings]
-    if: needs.check-upstream.outputs.should_build == 'true'
+    if: needs.check-upstream.outputs.should_build == 'true' && (needs.check-upstream.outputs.build_target == 'all' || needs.check-upstream.outputs.build_target == 'macos-arm64-vulkan')
     runs-on: macos-14
     steps:
       - uses: actions/checkout@v4
@@ -681,7 +732,7 @@ jobs:
 
   build-macos-x86_64:
     needs: [check-upstream, validate-bindings]
-    if: needs.check-upstream.outputs.should_build == 'true'
+    if: needs.check-upstream.outputs.should_build == 'true' && (needs.check-upstream.outputs.build_target == 'all' || needs.check-upstream.outputs.build_target == 'macos-x86_64-cpu')
     runs-on: macos-15-intel
     steps:
       - uses: actions/checkout@v4
@@ -776,7 +827,7 @@ jobs:
 
   build-macos-x86_64-vulkan:
     needs: [check-upstream, validate-bindings]
-    if: needs.check-upstream.outputs.should_build == 'true'
+    if: needs.check-upstream.outputs.should_build == 'true' && (needs.check-upstream.outputs.build_target == 'all' || needs.check-upstream.outputs.build_target == 'macos-x86_64-vulkan')
     runs-on: macos-15-intel
     steps:
       - uses: actions/checkout@v4
@@ -853,7 +904,7 @@ jobs:
 
   build-windows-x64:
     needs: [check-upstream, validate-bindings]
-    if: needs.check-upstream.outputs.should_build == 'true'
+    if: needs.check-upstream.outputs.should_build == 'true' && (needs.check-upstream.outputs.build_target == 'all' || needs.check-upstream.outputs.build_target == 'windows-x64-cpu')
     runs-on: windows-2022
     steps:
       - uses: actions/checkout@v4
@@ -1032,7 +1083,7 @@ jobs:
 
   build-windows-x64-cuda:
     needs: [check-upstream, validate-bindings]
-    if: needs.check-upstream.outputs.should_build == 'true'
+    if: needs.check-upstream.outputs.should_build == 'true' && (needs.check-upstream.outputs.build_target == 'all' || needs.check-upstream.outputs.build_target == 'windows-x64-cuda')
     runs-on: windows-2022
     steps:
       - uses: actions/checkout@v4
@@ -1301,7 +1352,7 @@ jobs:
 
   build-windows-x64-vulkan:
     needs: [check-upstream, validate-bindings]
-    if: needs.check-upstream.outputs.should_build == 'true'
+    if: needs.check-upstream.outputs.should_build == 'true' && (needs.check-upstream.outputs.build_target == 'all' || needs.check-upstream.outputs.build_target == 'windows-x64-vulkan')
     runs-on: windows-2022
     steps:
       - uses: actions/checkout@v4
@@ -1464,7 +1515,7 @@ jobs:
 
   release:
     needs: [check-upstream, build-linux-x86_64, build-linux-x86_64-cuda, build-linux-x86_64-vulkan, build-macos-arm64, build-macos-arm64-vulkan, build-macos-x86_64, build-macos-x86_64-vulkan, build-windows-x64, build-windows-x64-cuda, build-windows-x64-vulkan]
-    if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && startsWith(github.ref, 'refs/tags/')
+    if: always() && !failure() && !cancelled() && needs.check-upstream.result == 'success' && needs.check-upstream.outputs.publish_release == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -1480,6 +1531,7 @@ jobs:
           merge-multiple: true
 
       - name: Download CPU-only wheels (for PyPI)
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/') && needs.check-upstream.outputs.build_target == 'all'
         uses: actions/download-artifact@v4
         with:
           path: dist_pypi
@@ -1487,6 +1539,7 @@ jobs:
           merge-multiple: true
 
       - name: Download macOS Metal wheels (for PyPI)
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/') && needs.check-upstream.outputs.build_target == 'all'
         uses: actions/download-artifact@v4
         with:
           path: dist_pypi
@@ -1494,18 +1547,21 @@ jobs:
           merge-multiple: true
       
       - name: Create Release
-        uses: softprops/action-gh-release@v1
-        if: startsWith(github.ref, 'refs/tags/') && needs.check-upstream.outputs.upstream_tag_exists == 'true'
+        uses: softprops/action-gh-release@v3
+        if: needs.check-upstream.outputs.upstream_tag_exists == 'true'
         with:
+          tag_name: ${{ needs.check-upstream.outputs.release_tag }}
           files: dist/*.whl
+          fail_on_unmatched_files: true
+          overwrite_files: true
           body: |
             **Upstream llama.cpp:**
-            - Release page: https://github.com/ggml-org/llama.cpp/releases/tag/${{ github.ref_name }}
-            - Tag page: https://github.com/ggml-org/llama.cpp/tree/${{ github.ref_name }}
+            - Release page: https://github.com/ggml-org/llama.cpp/releases/tag/${{ needs.check-upstream.outputs.upstream_tag }}
+            - Tag page: https://github.com/ggml-org/llama.cpp/tree/${{ needs.check-upstream.outputs.upstream_tag }}
           generate_release_notes: true
       
       - name: Publish to PyPI
-        if: startsWith(github.ref, 'refs/tags/') && needs.check-upstream.outputs.upstream_tag_exists == 'true' && env.PYPI_API_TOKEN != ''
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/') && needs.check-upstream.outputs.build_target == 'all' && needs.check-upstream.outputs.upstream_tag_exists == 'true' && env.PYPI_API_TOKEN != ''
         env:
           PYPI_API_TOKEN: ${{ secrets.PYPI_API_TOKEN }}
         run: |

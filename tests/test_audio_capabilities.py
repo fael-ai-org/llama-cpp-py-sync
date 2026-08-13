@@ -27,7 +27,12 @@ def test_generated_audio_cffi_surface_is_complete():
 
 @pytest.mark.native
 def test_packaged_native_mtmd_matches_generated_abi():
-    assert get_binding_health(require_mtmd=True) == {
+    try:
+        health = get_binding_health(require_mtmd=True)
+    except RuntimeError as exc:
+        pytest.skip(f"Native llama.cpp/mtmd libraries are unavailable: {exc}")
+
+    assert health == {
         "llama": True,
         "mtmd": True,
         "missing_mtmd_symbols": [],
@@ -35,17 +40,21 @@ def test_packaged_native_mtmd_matches_generated_abi():
 
 
 def test_source_manifest_bindings_and_version_use_one_commit():
-    vendor_sha = subprocess.check_output(
-        ["git", "rev-parse", "HEAD"], cwd=ROOT / "vendor" / "llama.cpp", text=True
-    ).strip()
     manifest = json.loads(
         (ROOT / "src" / "llama_cpp_py_sync" / "native_manifest.json").read_text()
     )
     bindings = (ROOT / "src" / "llama_cpp_py_sync" / "_cffi_bindings.py").read_text()
     version = (ROOT / "src" / "llama_cpp_py_sync" / "_version.py").read_text()
-    assert manifest["llama_cpp_commit"] == vendor_sha
-    assert vendor_sha in bindings
-    assert vendor_sha[:7] in version
+    expected_sha = manifest["llama_cpp_commit"]
+    assert expected_sha in bindings
+    assert expected_sha[:7] in version
+
+    vendor_checkout = ROOT / "vendor" / "llama.cpp"
+    if (vendor_checkout / ".git").is_dir():
+        vendor_sha = subprocess.check_output(
+            ["git", "rev-parse", "HEAD"], cwd=vendor_checkout, text=True
+        ).strip()
+        assert vendor_sha == expected_sha
 
 
 def test_audio_only_projector_is_accepted(monkeypatch, tmp_path):

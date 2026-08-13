@@ -17,8 +17,9 @@ from llama_cpp_py_sync.backends import (
     is_vulkan_available,
 )
 from llama_cpp_py_sync.embeddings import get_embeddings, get_embeddings_batch
-from llama_cpp_py_sync.llama import Llama
+from llama_cpp_py_sync.llama import GeneratedAudio, Llama
 from llama_cpp_py_sync.multimodal import (
+    AudioValidationError,
     ImageValidationError,
     MultimodalCancelledError,
     MultimodalContext,
@@ -32,10 +33,12 @@ __all__ = [
     "__llama_cpp_commit__",
     "__llama_cpp_tag__",
     "Llama",
+    "GeneratedAudio",
     "MultimodalContext",
     "MultimodalError",
     "ProjectorCompatibilityError",
     "ImageValidationError",
+    "AudioValidationError",
     "MultimodalCancelledError",
     "MultimodalLimits",
     "get_embeddings",

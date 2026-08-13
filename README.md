@@ -147,7 +147,7 @@ with llama.Llama("model.gguf", n_gpu_layers=35) as llm:
     print(llm.generate("Once upon a time"))
 ```
 
-## Multimodal vision
+## Multimodal vision and audio
 
 Vision-language inference uses the current upstream `mtmd` C API. The language
 model and projector remain separate files; pass the projector explicitly or
@@ -191,7 +191,7 @@ model before a request begins; incompatible or corrupt projectors raise
 `ProjectorCompatibilityError`.
 
 The generated binding banner records the exact llama.cpp revision
-`2b63e0610bbc2be990ae1360d5256efcdc3f9efb` and the CFFI surface includes
+`a94d563ed801d1da1b8c2432946de07d0231bb3d` and the CFFI surface includes
 `tools/mtmd/mtmd.h` and `mtmd-helper.h`. Wheels contain `libllama`, `libmtmd`,
 and their `libggml-*` dependencies (or the platform equivalents); a wheel
 missing the required `mtmd` ABI fails closed when `MultimodalContext` is
@@ -203,6 +203,49 @@ adding images requires an explicit `MultimodalContext`, so invalid or
 incompatible multimodal inputs cannot silently fall back to text inference.
 The bundled ABI and native-library inventory are recorded in
 `src/llama_cpp_py_sync/native_manifest.json` and the third-party notices.
+
+Audio-only projectors are supported as well as combined vision/audio
+projectors. Audio paths must name readable local files; encoded WAV, MP3, and
+FLAC bytes can also be passed in memory. Codec detection and preprocessing are
+performed by the synchronized `mtmd` implementation.
+
+```python
+from pathlib import Path
+
+with llama.Llama("speech-model.gguf", n_ctx=4096) as model:
+    print(model.get_capabilities(projector_path="speech-mmproj.gguf"))
+
+    text = model.transcribe(
+        "recording.wav",
+        projector_path="speech-mmproj.gguf",
+        language="en",
+    )
+
+    generated = model.generate_audio(
+        "Hello from llama.cpp.",
+        projector_path="tts-mmproj.gguf",
+        language="en",
+        speaker_reference="speaker.wav",  # optional when supported
+        seed=42,
+    )
+    Path("output.wav").write_bytes(generated.data)
+```
+
+`get_capabilities()` combines GGUF metadata with native llama.cpp and `mtmd`
+queries. It reports audio input/output, sample rate, languages discoverable
+from the native vocabulary, speaker-reference support, model variants, and
+accepted generation options when those features are provided. Explicit
+projector paths are checked first; otherwise the existing beside-model naming
+conventions are used.
+
+Transcription and generation accept `cancel_callback`; cancellation raises a
+clear exception and releases native prompts, bitmaps, projector contexts, and
+audio-generation helpers deterministically. Missing, corrupt, or incompatible
+companion artifacts fail without falling back to another modality.
+
+Actual embedding, ASR, and TTS model-family support is defined by the pinned
+upstream llama.cpp revision. This package does not keep a Python model-name
+registry and never launches `llama-server`, `llama-tts`, or another CLI.
 
 ### Embeddings
 
@@ -369,7 +412,7 @@ The build system automatically detects available backends:
 | CUDA | Linux, Windows | `CUDA_HOME` or `/usr/local/cuda` |
 | ROCm | Linux | `ROCM_PATH` or `/opt/rocm` |
 | Metal | macOS | Xcode SDK |
-| Vulkan | Linux, Windows, macOS (Intel) | `VULKAN_SDK`, Homebrew (`vulkan-loader`, `molten-vk`), or system headers |
+| Vulkan | Linux, Windows, macOS (Intel and Apple Silicon) | CI uses the pinned Vulkan SDK 1.4.335.0; local builds can use `VULKAN_SDK`, Homebrew, or system headers |
 | BLAS | All | OpenBLAS, MKL, or Accelerate |
 
 CUDA release wheels use CUDA 12.8 and compile native targets for Maxwell through

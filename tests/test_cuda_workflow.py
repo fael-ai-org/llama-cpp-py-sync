@@ -31,7 +31,9 @@ def test_macos_arm64_vulkan_wheel_is_built_and_released() -> None:
 
     assert "build-macos-arm64-vulkan:" in workflow
     assert "runs-on: macos-14" in workflow
-    assert "brew install cmake ninja molten-vk vulkan-loader vulkan-headers shaderc" in workflow
+    assert "uses: jakoch/install-vulkan-sdk-action@v1" in workflow
+    assert "vulkan_version: '1.4.335.0'" in workflow
+    assert "brew install cmake ninja" in workflow
     assert "macosx_14_0_arm64 --build 1vulkan" in workflow
     assert "name: wheel-macos-arm64-vulkan" in workflow
     assert "build-macos-arm64-vulkan, build-macos-x86_64" in workflow

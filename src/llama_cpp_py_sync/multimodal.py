@@ -31,6 +31,10 @@ class ImageValidationError(MultimodalError, ValueError):
     """Raised when an image payload violates the multimodal input contract."""
 
 
+class AudioValidationError(MultimodalError, ValueError):
+    """Raised when an audio payload violates the multimodal input contract."""
+
+
 class MultimodalCancelledError(MultimodalError):
     """Raised when a caller cancels multimodal preprocessing or generation."""
 
@@ -48,6 +52,7 @@ class MultimodalLimits:
     max_width: int = 8192
     max_height: int = 8192
     max_total_pixels: int = 64 * 1024 * 1024
+    max_audio_bytes: int = 256 * 1024 * 1024
 
     def __post_init__(self) -> None:
         for name in (
@@ -57,6 +62,7 @@ class MultimodalLimits:
             "max_width",
             "max_height",
             "max_total_pixels",
+            "max_audio_bytes",
         ):
             value = getattr(self, name)
             if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
@@ -382,9 +388,9 @@ class MultimodalContext:
         self._progress_cancelled = False
 
         caps = self._lib.mtmd_get_cap_from_file(str(self.projector_path).encode("utf-8"))
-        if not bool(caps.inp_vision):
+        if not bool(caps.inp_vision) and not bool(caps.inp_audio):
             raise ProjectorCompatibilityError(
-                f"Projector {self.projector_path} does not provide vision input or is corrupt"
+                f"Projector {self.projector_path} does not provide supported media input or is corrupt"
             )
 
         params = self._lib.mtmd_context_params_default()
@@ -427,11 +433,13 @@ class MultimodalContext:
             raise ProjectorCompatibilityError(
                 f"Projector {self.projector_path} is incompatible with the loaded language model"
             )
-        if not bool(self._lib.mtmd_support_vision(self._ctx)):
+        if not bool(self._lib.mtmd_support_vision(self._ctx)) and not bool(
+            self._lib.mtmd_support_audio(self._ctx)
+        ) and int(self._lib.mtmd_gen_audio_get_info(self._ctx).type) == 0:
             self._lib.mtmd_free(self._ctx)
             self._ctx = self._ffi.NULL
             raise ProjectorCompatibilityError(
-                f"Projector {self.projector_path} initialized without vision support"
+                f"Projector {self.projector_path} initialized without a supported capability"
             )
         _check_cancelled(cancel_callback)
         self.model._multimodal_capabilities = self.capabilities
@@ -472,15 +480,30 @@ class MultimodalContext:
     @property
     def capabilities(self) -> dict[str, Any]:
         self._ensure_open()
+        gen_info = self._lib.mtmd_gen_audio_get_info(self._ctx)
+        supports_generation = int(gen_info.type) != 0
+        modalities = ["text"]
+        if self.supports_vision:
+            modalities.append("image")
+        if self.supports_audio:
+            modalities.append("audio")
+        if supports_generation:
+            modalities.append("audio_output")
+        projector_type = "+".join(item for item in ("vision" if self.supports_vision else "", "audio" if self.supports_audio else "", "audio-generation" if supports_generation else "") if item)
         capabilities = {
             "multimodal": True,
-            "modalities": ["text", "image"] + (["audio"] if self.supports_audio else []),
-            "multiple_images": True,
+            "modalities": modalities,
+            "multiple_images": self.supports_vision,
             "projector_path": str(self.projector_path),
-            "projector_type": "vision" if not self.supports_audio else "vision+audio",
+            "projector_type": projector_type,
             "marker": self.marker,
             "mrope": bool(self._lib.mtmd_decode_use_mrope(self._ctx)),
             "non_causal_decode": bool(self._lib.mtmd_decode_use_non_causal(self._ctx, self._ffi.NULL)),
+            "input_audio": self.supports_audio,
+            "audio_generation": supports_generation,
+            "audio_sample_rate": int(gen_info.sample_rate) if supports_generation else self.audio_sample_rate,
+            "audio_model_variant": None if gen_info.model_variant == self._ffi.NULL else self._ffi.string(gen_info.model_variant).decode("utf-8", "replace"),
+            "generation_options": (["language", "speaker_reference", "top_k", "top_p", "seed", "max_frames", "output_format"] if supports_generation else []),
         }
         self.model._multimodal_capabilities = dict(capabilities)
         return capabilities
@@ -515,6 +538,88 @@ class MultimodalContext:
         if wrapper.bitmap == self._ffi.NULL:
             raise ImageValidationError("Native image preprocessing failed")
         return wrapper.bitmap
+
+    def create_audio_bitmap(self, audio: str | os.PathLike[str] | bytes | bytearray | memoryview) -> Any:
+        """Decode validated audio through upstream mtmd/miniaudio.
+
+        File formats and codecs intentionally remain owned by the synchronized
+        native implementation.  Python only bounds and validates the input.
+        """
+        self._ensure_open()
+        if isinstance(audio, (str, os.PathLike)):
+            path = Path(audio)
+            if not path.is_file():
+                raise FileNotFoundError(f"Audio file not found: {path}")
+            try:
+                size = path.stat().st_size
+            except OSError as exc:
+                raise AudioValidationError("Could not inspect audio file") from exc
+            if size <= 0:
+                raise AudioValidationError("Audio file must not be empty")
+            if size > self.limits.max_audio_bytes:
+                raise AudioValidationError("Audio file exceeds the configured byte limit")
+            wrapper = self._lib.mtmd_helper_bitmap_init_from_file(
+                self._ctx, str(path.resolve()).encode("utf-8"), False
+            )
+        elif isinstance(audio, (bytes, bytearray, memoryview)):
+            raw = bytes(audio)
+            if not raw:
+                raise AudioValidationError("Audio data must not be empty")
+            if len(raw) > self.limits.max_audio_bytes:
+                raise AudioValidationError("Audio data exceeds the configured byte limit")
+            buf = self._ffi.new("unsigned char[]", raw)
+            wrapper = self._lib.mtmd_helper_bitmap_init_from_buf(
+                self._ctx, buf, len(raw), False
+            )
+        else:
+            raise TypeError("audio must be a local path or bytes-like encoded audio")
+        if wrapper.bitmap == self._ffi.NULL or not bool(
+            self._lib.mtmd_bitmap_is_audio(wrapper.bitmap)
+        ):
+            if wrapper.bitmap != self._ffi.NULL:
+                self._lib.mtmd_bitmap_free(wrapper.bitmap)
+            raise AudioValidationError("Native audio decoding failed or the format is unsupported")
+        return wrapper.bitmap
+
+    def tokenize_audio_prompt(
+        self,
+        text: str,
+        audio: str | os.PathLike[str] | bytes | bytearray | memoryview,
+        *,
+        add_special: bool = True,
+        parse_special: bool = True,
+        cancel_callback: CancellationCallback | None = None,
+    ) -> MultimodalPrompt:
+        """Tokenize one audio input using the projector's native media marker."""
+        self._ensure_open()
+        if not self.supports_audio:
+            raise ProjectorCompatibilityError("The loaded projector does not support audio input")
+        _check_cancelled(cancel_callback)
+        marker = self.marker
+        prompt = text if marker in text else text + marker
+        bitmap = self.create_audio_bitmap(audio)
+        chunks = self._lib.mtmd_input_chunks_init()
+        if chunks == self._ffi.NULL:
+            self._lib.mtmd_bitmap_free(bitmap)
+            raise MultimodalError("Could not allocate native input chunks")
+        try:
+            encoded = prompt.encode("utf-8")
+            text_buf = self._ffi.new("char[]", encoded)
+            input_text = self._ffi.new("mtmd_input_text *")
+            input_text.text = text_buf
+            input_text.text_len = len(encoded)
+            input_text.add_special = bool(add_special)
+            input_text.parse_special = bool(parse_special)
+            bitmaps = self._ffi.new("const mtmd_bitmap *[]", [bitmap])
+            result = self._lib.mtmd_tokenize(self._ctx, chunks, input_text, bitmaps, 1)
+            if result != 0:
+                raise MultimodalError(f"Native audio tokenization failed with code {result}")
+            _check_cancelled(cancel_callback)
+            return MultimodalPrompt(self, chunks, [bitmap])
+        except BaseException:
+            self._lib.mtmd_input_chunks_free(chunks)
+            self._lib.mtmd_bitmap_free(bitmap)
+            raise
 
     def load_image_file(self, path: str | os.PathLike[str]) -> Any:
         """Load a local PNG/JPEG file after applying the same limits as byte input."""

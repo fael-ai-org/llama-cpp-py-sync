@@ -63,6 +63,16 @@ class GenerationConfig:
     stop_sequences: list[str] = field(default_factory=list)
 
 
+@dataclass(frozen=True)
+class GeneratedAudio:
+    """Audio returned by :meth:`Llama.generate_audio`."""
+
+    data: bytes
+    sample_rate: int
+    format: str
+    n_samples: int
+
+
 class Llama:
     """
     High-level wrapper for llama.cpp model inference.
@@ -189,7 +199,12 @@ class Llama:
         ctx_params.n_threads_batch = (
             n_threads_batch if n_threads_batch is not None else n_thr
         )
-        ctx_params.embeddings = embedding
+        # Native audio generation consumes the backbone's last hidden state via
+        # llama_get_embeddings_ith().  A projector may be supplied only later
+        # to generate_audio(), so the context must retain embeddings from the
+        # outset.  The public text-embedding API remains gated by
+        # ``self._embedding`` below.
+        ctx_params.embeddings = True
         if type_k is not None:
             ctx_params.type_k = _resolve_ggml_type(type_k)
         if type_v is not None:
@@ -346,6 +361,95 @@ class Llama:
             "projector_path": None,
             "projector_type": None,
         }
+
+    def _model_metadata(self) -> dict[str, str]:
+        """Read GGUF metadata through llama.cpp without interpreting model names."""
+        result: dict[str, str] = {}
+        count_fn = getattr(self._lib, "llama_model_meta_count", None)
+        key_fn = getattr(self._lib, "llama_model_meta_key_by_index", None)
+        value_fn = getattr(self._lib, "llama_model_meta_val_str_by_index", None)
+        if count_fn is None or key_fn is None or value_fn is None:
+            return result
+        for index in range(max(0, int(count_fn(self._model)))):
+            key_size = int(key_fn(self._model, index, self._ffi.NULL, 0))
+            value_size = int(value_fn(self._model, index, self._ffi.NULL, 0))
+            if key_size < 0 or value_size < 0:
+                continue
+            key_buf = self._ffi.new("char[]", key_size + 1)
+            value_buf = self._ffi.new("char[]", value_size + 1)
+            if key_fn(self._model, index, key_buf, key_size + 1) < 0:
+                continue
+            if value_fn(self._model, index, value_buf, value_size + 1) < 0:
+                continue
+            result[self._ffi.string(key_buf).decode("utf-8", "replace")] = (
+                self._ffi.string(value_buf).decode("utf-8", "replace")
+            )
+        return result
+
+    def _native_audio_languages(self) -> list[str]:
+        """Expose language tokens supplied by the native vocabulary, when present."""
+        if self._vocab is None:
+            return []
+        get_text = getattr(self._lib, "llama_vocab_get_text", None)
+        if get_text is None:
+            return []
+        prefix = "<|codec_language_"
+        suffix = "|>"
+        languages: set[str] = set()
+        for token in range(self.n_vocab):
+            pointer = get_text(self._vocab, token)
+            if pointer == self._ffi.NULL:
+                continue
+            piece = self._ffi.string(pointer).decode("utf-8", "replace")
+            if piece.startswith(prefix) and piece.endswith(suffix):
+                languages.add(piece[len(prefix) : -len(suffix)])
+        return sorted(languages)
+
+    def get_capabilities(
+        self,
+        projector_path: str | os.PathLike[str] | None = None,
+        *,
+        discover_projector: bool = True,
+    ) -> dict[str, Any]:
+        """Inspect GGUF and native llama.cpp/mtmd capabilities.
+
+        Supplying a projector path performs full native compatibility checking.
+        Automatic discovery follows the same conventions as multimodal chat.
+        """
+        metadata = self._model_metadata()
+        has_encoder_fn = getattr(self._lib, "llama_model_has_encoder", None)
+        has_decoder_fn = getattr(self._lib, "llama_model_has_decoder", None)
+        result: dict[str, Any] = {
+            "text_generation": bool(has_decoder_fn(self._model)) if has_decoder_fn else True,
+            "embeddings": bool(self._embedding),
+            "encoder": bool(has_encoder_fn(self._model)) if has_encoder_fn else None,
+            "decoder": bool(has_decoder_fn(self._model)) if has_decoder_fn else None,
+            "modalities": ["text"],
+            "projector_path": None,
+            "input_audio": False,
+            "audio_generation": False,
+            "supported_languages": self._native_audio_languages(),
+            "preset_timbres": [],
+            "speaker_references": False,
+            "generation_options": [],
+            "metadata": metadata,
+        }
+        try:
+            from llama_cpp_py_sync.multimodal import MultimodalContext
+
+            with MultimodalContext(
+                self,
+                projector_path,
+                discover_projector=discover_projector,
+                warmup=False,
+            ) as context:
+                result.update(context.capabilities)
+                result["supported_languages"] = self._native_audio_languages()
+                result["speaker_references"] = bool(result.get("audio_generation"))
+        except FileNotFoundError:
+            if projector_path is not None:
+                raise
+        return result
 
     @property
     def n_layer(self) -> int:
@@ -895,6 +999,201 @@ class Llama:
         """Explicit alias for :meth:`create_chat_completion` with multimodal messages."""
         return self.create_chat_completion(messages, **kwargs)
 
+    def transcribe(
+        self,
+        audio: str | os.PathLike[str] | bytes | bytearray | memoryview,
+        *,
+        projector_path: str | os.PathLike[str] | None = None,
+        discover_projector: bool = True,
+        prompt: str | None = None,
+        language: str | None = None,
+        max_tokens: int = 512,
+        temperature: float = 0.0,
+        top_k: int = 40,
+        top_p: float = 0.95,
+        seed: int | None = None,
+        cancel_callback: Callable[[], bool] | None = None,
+    ) -> str:
+        """Transcribe encoded audio using an upstream audio-input projector."""
+        from llama_cpp_py_sync.multimodal import (
+            MultimodalCancelledError,
+            MultimodalContext,
+        )
+
+        if not isinstance(prompt, (str, type(None))):
+            raise TypeError("prompt must be a string or None")
+        if language is not None and (not isinstance(language, str) or not language.strip()):
+            raise ValueError("language must be a non-empty string")
+        request = prompt if prompt else "Transcribe the audio."
+        if language:
+            request += f" (language: {language.strip()})"
+        self._clear_context_state()
+        self._configure_generation_sampler(
+            temperature, top_k, top_p, 0.0, 1.0, 0, seed
+        )
+        self._set_abort_callback(cancel_callback)
+        try:
+            with MultimodalContext(
+                self,
+                projector_path,
+                discover_projector=discover_projector,
+                cancel_callback=cancel_callback,
+            ) as context:
+                if not context.supports_audio:
+                    raise RuntimeError("The companion projector does not support audio transcription")
+                formatted_prompt, _ = self._format_chat_prompt(
+                    [{"role": "user", "content": request + context.marker}],
+                    None,
+                )
+                with context.tokenize_audio_prompt(
+                    formatted_prompt,
+                    audio,
+                    cancel_callback=cancel_callback,
+                ) as tokenized:
+                    n_past = context.evaluate_prompt(
+                        tokenized, cancel_callback=cancel_callback
+                    )
+                if n_past + max_tokens >= self._n_ctx:
+                    raise ValueError("Transcription request exceeds the model context window")
+                try:
+                    return "".join(
+                        self._generate_from_n_past(
+                            n_past, max_tokens, None, cancel_callback
+                        )
+                    )
+                except RuntimeError as exc:
+                    if cancel_callback is not None and cancel_callback():
+                        raise MultimodalCancelledError("Audio transcription was cancelled") from exc
+                    raise
+        finally:
+            self._set_abort_callback(None)
+
+    def generate_audio(
+        self,
+        text: str,
+        *,
+        projector_path: str | os.PathLike[str] | None = None,
+        discover_projector: bool = True,
+        language: str | None = None,
+        speaker_reference: str | os.PathLike[str] | bytes | bytearray | memoryview | None = None,
+        top_k: int = 40,
+        top_p: float = 0.95,
+        temperature: float = 0.8,
+        seed: int | None = None,
+        max_frames: int = 512,
+        output_format: str = "wav",
+        cancel_callback: Callable[[], bool] | None = None,
+    ) -> GeneratedAudio:
+        """Generate audio through upstream mtmd's in-process TTS helper."""
+        from llama_cpp_py_sync.multimodal import (
+            MultimodalCancelledError,
+            MultimodalContext,
+            ProjectorCompatibilityError,
+        )
+
+        if not isinstance(text, str) or not text.strip():
+            raise ValueError("text must be a non-empty string")
+        if language is not None and (not isinstance(language, str) or not language.strip()):
+            raise ValueError("language must be a non-empty string")
+        if top_k <= 0 or not 0.0 < top_p <= 1.0 or temperature < 0.0:
+            raise ValueError("top_k, top_p, or temperature is outside its supported range")
+        if max_frames <= 0:
+            raise ValueError("max_frames must be positive")
+        fmt = output_format.strip().lower()
+        if fmt not in {"wav", "pcm"}:
+            raise ValueError("output_format must be 'wav' or 'pcm'")
+
+        self._clear_context_state()
+        self._configure_generation_sampler(temperature, top_k, top_p, 0.0, 1.0, 0, seed)
+        self._set_abort_callback(cancel_callback)
+        try:
+            with MultimodalContext(
+                self,
+                projector_path,
+                discover_projector=discover_projector,
+                cancel_callback=cancel_callback,
+            ) as context:
+                info = context._lib.mtmd_gen_audio_get_info(context._ctx)
+                if int(info.type) == 0:
+                    raise ProjectorCompatibilityError(
+                        "The companion artifact does not support audio generation"
+                    )
+                speaker = context._ffi.NULL
+                helper = context._ffi.NULL
+                try:
+                    if speaker_reference is not None:
+                        speaker = context.create_audio_bitmap(speaker_reference)
+                    helper = context._lib.mtmd_helper_gen_audio_init(self._ctx, context._ctx)
+                    if helper == context._ffi.NULL:
+                        raise RuntimeError("Could not initialize native audio generation")
+                    prompt_bytes = text.encode("utf-8")
+                    prompt_buf = context._ffi.new("char[]", prompt_bytes)
+                    language_buf = (
+                        context._ffi.NULL
+                        if language is None
+                        else context._ffi.new("char[]", language.strip().encode("utf-8"))
+                    )
+                    inp = context._ffi.new("struct mtmd_helper_gen_audio_inp *")
+                    inp.seq_id = 0
+                    inp.prompt = prompt_buf
+                    inp.prompt_len = len(prompt_bytes)
+                    inp.speaker_ref = speaker
+                    inp.lang = language_buf
+                    inp.top_k = int(top_k)
+                    inp.top_p = float(top_p)
+                    inp.seed = 0xFFFFFFFF if seed is None else int(seed) & 0xFFFFFFFF
+                    inp.out_type = 1 if fmt == "wav" else 0
+                    if context._lib.mtmd_helper_gen_audio_set_input(helper, inp) != 0:
+                        raise ValueError("Native audio generation rejected the requested options")
+                    while True:
+                        if cancel_callback is not None and cancel_callback():
+                            raise MultimodalCancelledError("Audio generation was cancelled")
+                        remaining = int(
+                            context._lib.mtmd_helper_gen_audio_step_prompt(helper, self._n_batch)
+                        )
+                        if remaining < 0:
+                            raise RuntimeError("Native audio prompt processing failed")
+                        if remaining == 0:
+                            break
+
+                    sampled = self._sample_token()
+                    h_state = self._lib.llama_get_embeddings_ith(self._ctx, -1)
+                    if h_state == self._ffi.NULL:
+                        raise RuntimeError("Native model did not provide an audio generation state")
+                    for _ in range(max_frames):
+                        if cancel_callback is not None and cancel_callback():
+                            raise MultimodalCancelledError("Audio generation was cancelled")
+                        next_state = context._ffi.new("const float **")
+                        stopped = context._ffi.new("bool *")
+                        code = context._lib.mtmd_helper_gen_audio_step_gen(
+                            helper, sampled, h_state, next_state, stopped
+                        )
+                        if code != 0:
+                            raise RuntimeError("Native audio frame generation failed")
+                        if bool(stopped[0]) or next_state[0] == context._ffi.NULL:
+                            break
+                        h_state = next_state[0]
+                        self._lib.llama_sampler_accept(self._sampler, sampled)
+                        sampled = self._sample_token()
+
+                    sample_rate = context._ffi.new("int32_t *")
+                    output = context._ffi.new("const char **")
+                    output_len = context._ffi.new("size_t *")
+                    n_samples = context._ffi.new("int64_t *")
+                    if context._lib.mtmd_helper_gen_audio_get_output(
+                        helper, sample_rate, output, output_len, n_samples
+                    ) != 0:
+                        raise RuntimeError("Native audio output encoding failed")
+                    data = bytes(context._ffi.buffer(output[0], int(output_len[0])))
+                    return GeneratedAudio(data, int(sample_rate[0]), fmt, int(n_samples[0]))
+                finally:
+                    if helper != context._ffi.NULL:
+                        context._lib.mtmd_helper_gen_audio_free(helper)
+                    if speaker != context._ffi.NULL:
+                        context._lib.mtmd_bitmap_free(speaker)
+        finally:
+            self._set_abort_callback(None)
+
     def get_embeddings(self, text: str) -> list[float]:
         """
         Get embeddings for input text.
@@ -936,9 +1235,16 @@ class Llama:
 
             batch.logits[len(tokens) - 1] = 1
 
-            result = self._lib.llama_encode(self._ctx, batch)
+            has_encoder = getattr(self._lib, "llama_model_has_encoder", None)
+            evaluate = (
+                self._lib.llama_encode
+                if has_encoder is not None and bool(has_encoder(self._model))
+                else self._lib.llama_decode
+            )
+            result = evaluate(self._ctx, batch)
             if result != 0:
-                raise RuntimeError(f"llama_encode failed with code {result}")
+                operation = "llama_encode" if evaluate == self._lib.llama_encode else "llama_decode"
+                raise RuntimeError(f"{operation} failed with code {result}")
 
             embd_ptr = self._lib.llama_get_embeddings_seq(self._ctx, 0)
             if embd_ptr == self._ffi.NULL:

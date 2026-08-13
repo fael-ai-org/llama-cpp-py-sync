@@ -542,7 +542,12 @@ jobs:
       - name: Install build tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y cmake ninja-build build-essential patchelf libvulkan-dev glslc glslang-tools spirv-headers
+          sudo apt-get install -y cmake ninja-build build-essential patchelf
+
+      - name: Install Vulkan SDK
+        uses: jakoch/install-vulkan-sdk-action@v1
+        with:
+          vulkan_version: '1.4.335.0'
 
       - name: Regenerate bindings from vendored llama.cpp
         run: |
@@ -685,8 +690,12 @@ jobs:
 
       - name: Install build tools and Vulkan runtime
         run: |
-          brew install cmake ninja molten-vk vulkan-loader vulkan-headers shaderc spirv-tools spirv-headers
-          echo "CMAKE_PREFIX_PATH=$(brew --prefix vulkan-loader);$(brew --prefix molten-vk);$(brew --prefix vulkan-headers);$(brew --prefix shaderc)" >> "$GITHUB_ENV"
+          brew install cmake ninja
+
+      - name: Install Vulkan SDK
+        uses: jakoch/install-vulkan-sdk-action@v1
+        with:
+          vulkan_version: '1.4.335.0'
 
       - name: Regenerate bindings from vendored llama.cpp
         run: |

@@ -219,7 +219,16 @@ with llama.Llama("speech-model.gguf", n_ctx=4096) as model:
         "recording.wav",
         projector_path="speech-mmproj.gguf",
         language="en",
+        structured=True,  # returns text/partial
     )
+
+    for frame in model.generate_audio_stream(
+        "Stream this sentence.",
+        projector_path="tts-mmproj.gguf",
+        language="en",
+    ):
+        # frame.data is raw float32 PCM for immediate playback.
+        print(frame.sample_rate, frame.n_samples)
 
     generated = model.generate_audio(
         "Hello from llama.cpp.",
@@ -247,14 +256,34 @@ Actual embedding, ASR, and TTS model-family support is defined by the pinned
 upstream llama.cpp revision. This package does not keep a Python model-name
 registry and never launches `llama-server`, `llama-tts`, or another CLI.
 
+The synchronized mtmd C API supports language selection and speaker-reference
+audio for TTS, plus step-wise generation and the stateless
+`mtmd_gen_audio_process()` frame API. The Python layer exposes the available
+helper step API as PCM frame deltas and cleans native ASR wrapper tags while
+yielding partial text.
+
 ### Embeddings
 
 ```python
-# Load an embedding model
-with llama.Llama("embed-model.gguf", embedding=True) as llm:
-    emb = llm.get_embeddings("Hello, world!")
+# Load an embedding model. ``pooling_type="none"`` enables per-token output.
+with llama.Llama(
+    "embed-model.gguf",
+    embedding=True,
+    pooling_type="mean",
+    n_seq_max=8,
+    n_gpu_layers=-1,
+) as llm:
+    emb = llm.get_embeddings("Hello, world!", normalize="l2")
+    batch = llm.get_embeddings_batch(["Hello", "world"], normalize="none")
     print(f"Embedding dimension: {len(emb)}")
+
+with llama.Llama("embed-model.gguf", embedding=True, pooling_type="none") as llm:
+    token_vectors = llm.get_embeddings("Hello", per_token=True)
 ```
+
+Pooling, batching, per-token output, and offload settings are passed to the
+native llama.cpp API. Normalization is an explicit Python post-processing step
+over the returned vectors.
 
 ### Check Available Backends
 
@@ -293,6 +322,9 @@ llm = llama.Llama(
     verbose=False,
     embedding=False,
     flash_attn_type=None,
+    pooling_type=None,
+    n_seq_max=1,
+    op_offload=None,
 )
 
 text = llm.generate(
@@ -332,7 +364,13 @@ llm.bos_token
 llm.eos_token
 
 # Embeddings (requires embedding=True)
-emb = llm.get_embeddings("Hello")
+emb = llm.get_embeddings("Hello", normalize="l2")
+batch = llm.get_embeddings_batch(["Hello", "World"], normalize="none")
+token_vectors = llm.get_embeddings("Hello", per_token=True)  # pooling_type="none"
+
+# Structured ASR and incremental TTS
+result = llm.transcribe("audio.wav", structured=True)
+audio_frames = llm.generate_audio_stream("Hello")
 
 llm.close()
 
@@ -454,6 +492,10 @@ class Llama:
         verbose: bool = False,              # Print loading info
         embedding: bool = False,            # Enable embedding mode
         flash_attn_type: int = None,        # Flash attention type (None = use env var)
+        offload_kqv: bool = None,            # Offload KV-cache operations
+        op_offload: bool = None,             # Offload host tensor operations
+        pooling_type: int | str = None,      # none, mean, cls, last, or rank
+        n_seq_max: int = 1,                  # Native sequence capacity
     ): ...
 
     def generate(
@@ -474,7 +516,8 @@ class Llama:
     def tokenize(self, text: str, add_special: bool = True, parse_special: bool = False) -> List[int]: ...
     def detokenize(self, tokens: List[int], remove_special: bool = False, unparse_special: bool = True) -> str: ...
     def token_to_piece(self, token: int) -> str: ...
-    def get_embeddings(self, text: str) -> List[float]: ...
+    def get_embeddings(self, text: str, normalize=None, per_token: bool = False): ...
+    def get_embeddings_batch(self, texts: Sequence[str], normalize=None, per_token: bool = False): ...
     def get_model_desc(self) -> str: ...
     def get_model_size(self) -> int: ...
     def get_model_n_params(self) -> int: ...
@@ -504,8 +547,8 @@ def is_blas_available() -> bool: ...
 ### Embedding Functions
 
 ```python
-def get_embeddings(model: Union[str, Llama], text: str) -> List[float]: ...
-def get_embeddings_batch(model: Union[str, Llama], texts: List[str]) -> List[List[float]]: ...
+def get_embeddings(model: Union[str, Llama], text: str, normalize=True, pooling_type=None, per_token=False, offload_kqv=None, op_offload=None): ...
+def get_embeddings_batch(model: Union[str, Llama], texts: List[str], normalize=True, pooling_type=None, per_token=False, offload_kqv=None, op_offload=None): ...
 ```
 
 ## Examples

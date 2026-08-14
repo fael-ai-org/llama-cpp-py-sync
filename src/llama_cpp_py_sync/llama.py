@@ -8,6 +8,7 @@ like loading models, tokenizing text, and generating completions.
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass, field
 from typing import Any, Callable, Iterator, Mapping, Sequence
 
@@ -36,6 +37,16 @@ LLAMA_LOAD_MODES: dict[str, int] = {
 }
 
 
+POOLING_TYPES: dict[str, int] = {
+    "unspecified": -1,
+    "none": 0,
+    "mean": 1,
+    "cls": 2,
+    "last": 3,
+    "rank": 4,
+}
+
+
 def _resolve_ggml_type(value: int | str) -> int:
     """Map a ggml type name to its enum value, passing ints through."""
     if isinstance(value, str):
@@ -47,6 +58,31 @@ def _resolve_ggml_type(value: int | str) -> int:
             )
         return GGML_KV_TYPES[key]
     return int(value)
+
+
+def _resolve_pooling_type(value: int | str) -> int:
+    if isinstance(value, str):
+        key = value.strip().lower()
+        if key not in POOLING_TYPES:
+            raise ValueError(
+                f"Unknown pooling type {value!r}; expected one of "
+                f"{', '.join(POOLING_TYPES)} or a llama_pooling_type int."
+            )
+        return POOLING_TYPES[key]
+    return int(value)
+
+
+_ASR_TEXT_TAG_RE = re.compile(r"</?asr_text>", re.IGNORECASE)
+_ASR_LANGUAGE_TAG_RE = re.compile(
+    r"<\|(?P<language>[A-Za-z][A-Za-z0-9_-]{1,15})\|>"
+)
+
+
+def _clean_asr_text(text: str) -> str:
+    """Remove ASR result wrappers without interpreting language tags."""
+    text = _ASR_LANGUAGE_TAG_RE.sub("", text)
+    text = _ASR_TEXT_TAG_RE.sub("", text)
+    return text.strip()
 
 
 @dataclass
@@ -71,6 +107,14 @@ class GeneratedAudio:
     sample_rate: int
     format: str
     n_samples: int
+
+
+@dataclass(frozen=True)
+class TranscriptionResult:
+    """Structured partial or final transcription text."""
+
+    text: str
+    partial: bool = False
 
 
 class Llama:
@@ -106,6 +150,9 @@ class Llama:
         type_k: int | str | None = None,
         type_v: int | str | None = None,
         offload_kqv: bool | None = None,
+        op_offload: bool | None = None,
+        pooling_type: int | str | None = None,
+        n_seq_max: int = 1,
     ):
         """
         Initialize the Llama model.
@@ -139,6 +186,11 @@ class Llama:
                 llama.cpp requires flash attention for a quantized V cache.
             offload_kqv: Whether to keep the KV cache on the GPU. ``None``
                 keeps the llama.cpp default.
+            op_offload: Whether to offload host tensor operations to the device.
+            pooling_type: Embedding pooling mode, such as ``"mean"`` or
+                ``"none"``. ``None`` keeps the model/upstream default.
+            n_seq_max: Maximum number of native sequences. Increase this for
+                true batched embedding requests.
         """
         if not os.path.exists(model_path):
             raise FileNotFoundError(f"Model file not found: {model_path}")
@@ -154,6 +206,14 @@ class Llama:
         self._verbose = verbose
         self._embedding = embedding
         self._n_ctx = n_ctx
+        if n_seq_max <= 0:
+            raise ValueError("n_seq_max must be positive")
+        self._n_seq_max = int(n_seq_max)
+        self._pooling_type_requested = (
+            None if pooling_type is None else _resolve_pooling_type(pooling_type)
+        )
+        self._multimodal_context = None
+        self._multimodal_context_options = None
         # Prompt evaluation must be chunked to this width: llama_decode asserts
         # on any batch wider than the context's n_batch.
         self._n_batch = max(1, int(n_batch))
@@ -194,6 +254,7 @@ class Llama:
         ctx_params.n_batch = n_batch
         ubatch = n_ubatch if n_ubatch is not None else n_batch
         ctx_params.n_ubatch = max(1, min(n_batch, ubatch))
+        ctx_params.n_seq_max = self._n_seq_max
         n_thr = n_threads if n_threads else os.cpu_count() or 4
         ctx_params.n_threads = n_thr
         ctx_params.n_threads_batch = (
@@ -211,6 +272,10 @@ class Llama:
             ctx_params.type_v = _resolve_ggml_type(type_v)
         if offload_kqv is not None:
             ctx_params.offload_kqv = bool(offload_kqv)
+        if op_offload is not None:
+            ctx_params.op_offload = bool(op_offload)
+        if self._pooling_type_requested is not None:
+            ctx_params.pooling_type = self._pooling_type_requested
         if flash_attn_type is not None:
             ctx_params.flash_attn_type = flash_attn_type
         else:
@@ -305,6 +370,10 @@ class Llama:
 
     def close(self):
         """Explicitly release model resources."""
+        if getattr(self, "_multimodal_context", None) is not None:
+            self._multimodal_context.close()
+            self._multimodal_context = None
+            self._multimodal_context_options = None
         if hasattr(self, "_sampler") and self._sampler is not None:
             self._lib.llama_sampler_free(self._sampler)
             self._sampler = None
@@ -349,6 +418,57 @@ class Llama:
         return self._lib.llama_n_embd(self._model)
 
     @property
+    def n_embd_out(self) -> int:
+        """Get the native output embedding dimension."""
+        fn = getattr(self._lib, "llama_model_n_embd_out", None)
+        return int(fn(self._model)) if fn is not None else self.n_embd
+
+    @property
+    def pooling_type(self) -> int:
+        """Get the effective native embedding pooling type."""
+        fn = getattr(self._lib, "llama_pooling_type", None)
+        if fn is None:
+            return self._pooling_type_requested if self._pooling_type_requested is not None else -1
+        return int(fn(self._ctx))
+
+    @property
+    def n_seq_max(self) -> int:
+        """Get the effective native sequence capacity."""
+        fn = getattr(self._lib, "llama_n_seq_max", None)
+        return int(fn(self._ctx)) if fn is not None else self._n_seq_max
+
+    def _embedding_capabilities(self) -> dict[str, Any]:
+        def has(name: str) -> bool:
+            return getattr(self._lib, name, None) is not None
+        return {
+            "pooling": {
+                "upstream_c_api": has("llama_pooling_type"),
+                "python_control": self._pooling_type_requested is not None,
+                "values": dict(POOLING_TYPES),
+            },
+            "normalization": {
+                "upstream_c_api": False,
+                "python_postprocess": True,
+                "modes": ["none", "max_abs", "taxicab", "euclidean", "p-norm"],
+            },
+            "batched_inputs": {
+                "upstream_c_api": has("llama_batch_init") and has("llama_decode"),
+                "python_interface": hasattr(self, "get_embeddings_batch"),
+                "native_sequence_capacity": self.n_seq_max,
+            },
+            "per_token": {
+                "upstream_c_api": has("llama_get_embeddings_ith"),
+                "requires_pooling": "none",
+            },
+            "model_offload": {
+                "n_gpu_layers": True,
+                "offload_kqv": True,
+                "op_offload": True,
+                "gpu_backend": bool(getattr(self._lib, "llama_supports_gpu_offload", lambda: False)()),
+            },
+        }
+
+    @property
     def capabilities(self) -> dict[str, Any]:
         """Report text and, after setup, multimodal model capabilities."""
         multimodal = getattr(self, "_multimodal_capabilities", None)
@@ -360,6 +480,7 @@ class Llama:
             "multiple_images": False,
             "projector_path": None,
             "projector_type": None,
+            "embedding_capabilities": self._embedding_capabilities(),
         }
 
     def _model_metadata(self) -> dict[str, str]:
@@ -410,6 +531,7 @@ class Llama:
         projector_path: str | os.PathLike[str] | None = None,
         *,
         discover_projector: bool = True,
+        projector_use_gpu: bool = True,
     ) -> dict[str, Any]:
         """Inspect GGUF and native llama.cpp/mtmd capabilities.
 
@@ -422,6 +544,7 @@ class Llama:
         result: dict[str, Any] = {
             "text_generation": bool(has_decoder_fn(self._model)) if has_decoder_fn else True,
             "embeddings": bool(self._embedding),
+            "embedding_capabilities": self._embedding_capabilities(),
             "encoder": bool(has_encoder_fn(self._model)) if has_encoder_fn else None,
             "decoder": bool(has_decoder_fn(self._model)) if has_decoder_fn else None,
             "modalities": ["text"],
@@ -435,21 +558,60 @@ class Llama:
             "metadata": metadata,
         }
         try:
-            from llama_cpp_py_sync.multimodal import MultimodalContext
-
-            with MultimodalContext(
-                self,
+            context = self._get_multimodal_context(
                 projector_path,
                 discover_projector=discover_projector,
+                use_gpu=projector_use_gpu,
                 warmup=False,
-            ) as context:
-                result.update(context.capabilities)
-                result["supported_languages"] = self._native_audio_languages()
-                result["speaker_references"] = bool(result.get("audio_generation"))
+            )
+            result.update(context.capabilities)
+            result["supported_languages"] = self._native_audio_languages()
+            result["speaker_references"] = bool(result.get("speaker_references"))
         except FileNotFoundError:
             if projector_path is not None:
                 raise
         return result
+
+    def _get_multimodal_context(
+        self,
+        projector_path: str | os.PathLike[str] | None,
+        *,
+        discover_projector: bool,
+        use_gpu: bool,
+        n_threads: int | None = None,
+        flash_attn_type: int | None = None,
+        warmup: bool = True,
+    ) -> Any:
+        """Load one projector context and keep it for subsequent turns."""
+        from llama_cpp_py_sync.multimodal import MultimodalContext
+
+        requested_path = None if projector_path is None else os.path.abspath(str(projector_path))
+        options = (
+            requested_path,
+            bool(discover_projector),
+            bool(use_gpu),
+            n_threads,
+            flash_attn_type,
+        )
+        current = self._multimodal_context
+        if current is not None and self._multimodal_context_options == options:
+            return current
+        if current is not None:
+            current.close()
+            self._multimodal_context = None
+            self._multimodal_context_options = None
+        context = MultimodalContext(
+            self,
+            projector_path,
+            discover_projector=discover_projector,
+            use_gpu=use_gpu,
+            n_threads=n_threads,
+            flash_attn_type=flash_attn_type,
+            warmup=warmup,
+        )
+        self._multimodal_context = context
+        self._multimodal_context_options = options
+        return context
 
     @property
     def n_layer(self) -> int:
@@ -1013,58 +1175,113 @@ class Llama:
         top_p: float = 0.95,
         seed: int | None = None,
         cancel_callback: Callable[[], bool] | None = None,
-    ) -> str:
-        """Transcribe encoded audio using an upstream audio-input projector."""
+        projector_use_gpu: bool = True,
+        structured: bool = False,
+    ) -> str | TranscriptionResult:
+        """Transcribe audio and remove native ASR wrapper tokens from the text."""
+        result: TranscriptionResult | None = None
+        for current in self.transcribe_stream(
+            audio,
+            projector_path=projector_path,
+            discover_projector=discover_projector,
+            prompt=prompt,
+            language=language,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            top_k=top_k,
+            top_p=top_p,
+            seed=seed,
+            cancel_callback=cancel_callback,
+            projector_use_gpu=projector_use_gpu,
+        ):
+            result = current
+        if result is None:
+            result = TranscriptionResult("")
+        return result if structured else result.text
+
+    def transcribe_stream(
+        self,
+        audio: str | os.PathLike[str] | bytes | bytearray | memoryview,
+        *,
+        projector_path: str | os.PathLike[str] | None = None,
+        discover_projector: bool = True,
+        prompt: str | None = None,
+        language: str | None = None,
+        max_tokens: int = 512,
+        temperature: float = 0.0,
+        top_k: int = 40,
+        top_p: float = 0.95,
+        seed: int | None = None,
+        cancel_callback: Callable[[], bool] | None = None,
+        projector_use_gpu: bool = True,
+    ) -> Iterator[TranscriptionResult]:
+        """Yield partial structured transcription results as text is decoded."""
         from llama_cpp_py_sync.multimodal import (
             MultimodalCancelledError,
-            MultimodalContext,
         )
 
         if not isinstance(prompt, (str, type(None))):
             raise TypeError("prompt must be a string or None")
         if language is not None and (not isinstance(language, str) or not language.strip()):
             raise ValueError("language must be a non-empty string")
+        if max_tokens <= 0:
+            raise ValueError("max_tokens must be positive")
+        requested_language = language.strip() if language else None
         request = prompt if prompt else "Transcribe the audio."
-        if language:
-            request += f" (language: {language.strip()})"
+        if requested_language:
+            request += f" (language: {requested_language})"
         self._clear_context_state()
         self._configure_generation_sampler(
             temperature, top_k, top_p, 0.0, 1.0, 0, seed
         )
         self._set_abort_callback(cancel_callback)
         try:
-            with MultimodalContext(
-                self,
+            context = self._get_multimodal_context(
                 projector_path,
                 discover_projector=discover_projector,
+                use_gpu=projector_use_gpu,
+                warmup=True,
+            )
+            if not context.supports_audio:
+                raise RuntimeError("The companion projector does not support audio transcription")
+            formatted_prompt, _ = self._format_chat_prompt(
+                [{"role": "user", "content": request + context.marker}],
+                None,
+            )
+            with context.tokenize_audio_prompt(
+                formatted_prompt,
+                audio,
                 cancel_callback=cancel_callback,
-            ) as context:
-                if not context.supports_audio:
-                    raise RuntimeError("The companion projector does not support audio transcription")
-                formatted_prompt, _ = self._format_chat_prompt(
-                    [{"role": "user", "content": request + context.marker}],
-                    None,
+            ) as tokenized:
+                n_past = context.evaluate_prompt(
+                    tokenized, cancel_callback=cancel_callback
                 )
-                with context.tokenize_audio_prompt(
-                    formatted_prompt,
-                    audio,
-                    cancel_callback=cancel_callback,
-                ) as tokenized:
-                    n_past = context.evaluate_prompt(
-                        tokenized, cancel_callback=cancel_callback
+            if n_past + max_tokens >= self._n_ctx:
+                raise ValueError("Transcription request exceeds the model context window")
+            generated = ""
+            last: TranscriptionResult | None = None
+            try:
+                for piece in self._generate_from_n_past(
+                    n_past, max_tokens, None, cancel_callback
+                ):
+                    generated += piece
+                    text = _clean_asr_text(generated)
+                    current = TranscriptionResult(
+                        text=text,
+                        partial=True,
                     )
-                if n_past + max_tokens >= self._n_ctx:
-                    raise ValueError("Transcription request exceeds the model context window")
-                try:
-                    return "".join(
-                        self._generate_from_n_past(
-                            n_past, max_tokens, None, cancel_callback
-                        )
-                    )
-                except RuntimeError as exc:
-                    if cancel_callback is not None and cancel_callback():
-                        raise MultimodalCancelledError("Audio transcription was cancelled") from exc
-                    raise
+                    if current != last:
+                        last = current
+                        if current.text:
+                            yield current
+                text = _clean_asr_text(generated)
+                final = TranscriptionResult(text=text, partial=False)
+                if final != last:
+                    yield final
+            except RuntimeError as exc:
+                if cancel_callback is not None and cancel_callback():
+                    raise MultimodalCancelledError("Audio transcription was cancelled") from exc
+                raise
         finally:
             self._set_abort_callback(None)
 
@@ -1083,11 +1300,27 @@ class Llama:
         max_frames: int = 512,
         output_format: str = "wav",
         cancel_callback: Callable[[], bool] | None = None,
-    ) -> GeneratedAudio:
+        projector_use_gpu: bool = True,
+        stream: bool = False,
+    ) -> GeneratedAudio | Iterator[GeneratedAudio]:
         """Generate audio through upstream mtmd's in-process TTS helper."""
+        if stream:
+            return self.generate_audio_stream(
+                text,
+                projector_path=projector_path,
+                discover_projector=discover_projector,
+                language=language,
+                speaker_reference=speaker_reference,
+                top_k=top_k,
+                top_p=top_p,
+                temperature=temperature,
+                seed=seed,
+                max_frames=max_frames,
+                cancel_callback=cancel_callback,
+                projector_use_gpu=projector_use_gpu,
+            )
         from llama_cpp_py_sync.multimodal import (
             MultimodalCancelledError,
-            MultimodalContext,
             ProjectorCompatibilityError,
         )
 
@@ -1107,22 +1340,148 @@ class Llama:
         self._configure_generation_sampler(temperature, top_k, top_p, 0.0, 1.0, 0, seed)
         self._set_abort_callback(cancel_callback)
         try:
-            with MultimodalContext(
-                self,
+            context = self._get_multimodal_context(
                 projector_path,
                 discover_projector=discover_projector,
-                cancel_callback=cancel_callback,
-            ) as context:
+                use_gpu=projector_use_gpu,
+            )
+            info = context._lib.mtmd_gen_audio_get_info(context._ctx)
+            if int(info.type) == 0:
+                raise ProjectorCompatibilityError(
+                    "The companion artifact does not support audio generation"
+                )
+            speaker_bitmap = context._ffi.NULL
+            helper = context._ffi.NULL
+            try:
+                if speaker_reference is not None:
+                    speaker_bitmap = context.create_audio_bitmap(speaker_reference)
+                helper = context._lib.mtmd_helper_gen_audio_init(self._ctx, context._ctx)
+                if helper == context._ffi.NULL:
+                    raise RuntimeError("Could not initialize native audio generation")
+                prompt_bytes = text.encode("utf-8")
+                prompt_buf = context._ffi.new("char[]", prompt_bytes)
+                language_buf = (
+                    context._ffi.NULL
+                    if language is None
+                    else context._ffi.new("char[]", language.strip().encode("utf-8"))
+                )
+                inp = context._ffi.new("struct mtmd_helper_gen_audio_inp *")
+                inp.seq_id = 0
+                inp.prompt = prompt_buf
+                inp.prompt_len = len(prompt_bytes)
+                inp.speaker_ref = speaker_bitmap
+                inp.lang = language_buf
+                inp.top_k = int(top_k)
+                inp.top_p = float(top_p)
+                inp.seed = 0xFFFFFFFF if seed is None else int(seed) & 0xFFFFFFFF
+                inp.out_type = 1 if fmt == "wav" else 0
+                if context._lib.mtmd_helper_gen_audio_set_input(helper, inp) != 0:
+                    raise ValueError("Native audio generation rejected the requested options")
+                while True:
+                    if cancel_callback is not None and cancel_callback():
+                        raise MultimodalCancelledError("Audio generation was cancelled")
+                    remaining = int(
+                        context._lib.mtmd_helper_gen_audio_step_prompt(helper, self._n_batch)
+                    )
+                    if remaining < 0:
+                        raise RuntimeError("Native audio prompt processing failed")
+                    if remaining == 0:
+                        break
+
+                sampled = self._sample_token()
+                h_state = self._lib.llama_get_embeddings_ith(self._ctx, -1)
+                if h_state == self._ffi.NULL:
+                    raise RuntimeError("Native model did not provide an audio generation state")
+                for _ in range(max_frames):
+                    if cancel_callback is not None and cancel_callback():
+                        raise MultimodalCancelledError("Audio generation was cancelled")
+                    next_state = context._ffi.new("const float **")
+                    stopped = context._ffi.new("bool *")
+                    code = context._lib.mtmd_helper_gen_audio_step_gen(
+                        helper, sampled, h_state, next_state, stopped
+                    )
+                    if code != 0:
+                        raise RuntimeError("Native audio frame generation failed")
+                    if bool(stopped[0]) or next_state[0] == context._ffi.NULL:
+                        break
+                    h_state = next_state[0]
+                    self._lib.llama_sampler_accept(self._sampler, sampled)
+                    sampled = self._sample_token()
+
+                sample_rate = context._ffi.new("int32_t *")
+                output = context._ffi.new("const char **")
+                output_len = context._ffi.new("size_t *")
+                n_samples = context._ffi.new("int64_t *")
+                if context._lib.mtmd_helper_gen_audio_get_output(
+                    helper, sample_rate, output, output_len, n_samples
+                ) != 0:
+                    raise RuntimeError("Native audio output encoding failed")
+                data = bytes(context._ffi.buffer(output[0], int(output_len[0])))
+                return GeneratedAudio(data, int(sample_rate[0]), fmt, int(n_samples[0]))
+            finally:
+                if helper != context._ffi.NULL:
+                    context._lib.mtmd_helper_gen_audio_free(helper)
+                if speaker_bitmap != context._ffi.NULL:
+                    context._lib.mtmd_bitmap_free(speaker_bitmap)
+        finally:
+            self._set_abort_callback(None)
+
+    def generate_audio_stream(
+        self,
+        text: str,
+        *,
+        projector_path: str | os.PathLike[str] | None = None,
+        discover_projector: bool = True,
+        language: str | None = None,
+        speaker_reference: str | os.PathLike[str] | bytes | bytearray | memoryview | None = None,
+        top_k: int = 40,
+        top_p: float = 0.95,
+        temperature: float = 0.8,
+        seed: int | None = None,
+        max_frames: int = 512,
+        cancel_callback: Callable[[], bool] | None = None,
+        projector_use_gpu: bool = True,
+    ) -> Iterator[GeneratedAudio]:
+        """Yield newly decoded raw float32 PCM audio chunks.
+
+        The pinned mtmd helper exposes frame stepping but only a cumulative
+        output getter. This method turns that cumulative output into deltas;
+        chunk boundaries therefore follow the upstream decoder's flush window.
+        """
+        def _stream() -> Iterator[GeneratedAudio]:
+            from llama_cpp_py_sync.multimodal import (
+                MultimodalCancelledError,
+                ProjectorCompatibilityError,
+            )
+
+            if not isinstance(text, str) or not text.strip():
+                raise ValueError("text must be a non-empty string")
+            if language is not None and (not isinstance(language, str) or not language.strip()):
+                raise ValueError("language must be a non-empty string")
+            if top_k <= 0 or not 0.0 < top_p <= 1.0 or temperature < 0.0:
+                raise ValueError("top_k, top_p, or temperature is outside its supported range")
+            if max_frames <= 0:
+                raise ValueError("max_frames must be positive")
+
+            self._clear_context_state()
+            self._configure_generation_sampler(temperature, top_k, top_p, 0.0, 1.0, 0, seed)
+            self._set_abort_callback(cancel_callback)
+            try:
+                context = self._get_multimodal_context(
+                    projector_path,
+                    discover_projector=discover_projector,
+                    use_gpu=projector_use_gpu,
+                )
                 info = context._lib.mtmd_gen_audio_get_info(context._ctx)
                 if int(info.type) == 0:
                     raise ProjectorCompatibilityError(
                         "The companion artifact does not support audio generation"
                     )
-                speaker = context._ffi.NULL
+                speaker_bitmap = context._ffi.NULL
                 helper = context._ffi.NULL
                 try:
                     if speaker_reference is not None:
-                        speaker = context.create_audio_bitmap(speaker_reference)
+                        speaker_bitmap = context.create_audio_bitmap(speaker_reference)
                     helper = context._lib.mtmd_helper_gen_audio_init(self._ctx, context._ctx)
                     if helper == context._ffi.NULL:
                         raise RuntimeError("Could not initialize native audio generation")
@@ -1137,12 +1496,12 @@ class Llama:
                     inp.seq_id = 0
                     inp.prompt = prompt_buf
                     inp.prompt_len = len(prompt_bytes)
-                    inp.speaker_ref = speaker
+                    inp.speaker_ref = speaker_bitmap
                     inp.lang = language_buf
                     inp.top_k = int(top_k)
                     inp.top_p = float(top_p)
                     inp.seed = 0xFFFFFFFF if seed is None else int(seed) & 0xFFFFFFFF
-                    inp.out_type = 1 if fmt == "wav" else 0
+                    inp.out_type = 0
                     if context._lib.mtmd_helper_gen_audio_set_input(helper, inp) != 0:
                         raise ValueError("Native audio generation rejected the requested options")
                     while True:
@@ -1160,6 +1519,27 @@ class Llama:
                     h_state = self._lib.llama_get_embeddings_ith(self._ctx, -1)
                     if h_state == self._ffi.NULL:
                         raise RuntimeError("Native model did not provide an audio generation state")
+                    emitted_samples = 0
+
+                    def read_delta() -> GeneratedAudio | None:
+                        nonlocal emitted_samples
+                        sample_rate = context._ffi.new("int32_t *")
+                        output = context._ffi.new("const char **")
+                        output_len = context._ffi.new("size_t *")
+                        n_samples = context._ffi.new("int64_t *")
+                        if context._lib.mtmd_helper_gen_audio_get_output(
+                            helper, sample_rate, output, output_len, n_samples
+                        ) != 0:
+                            raise RuntimeError("Native audio output encoding failed")
+                        total_samples = int(n_samples[0])
+                        if total_samples <= emitted_samples or output[0] == context._ffi.NULL:
+                            return None
+                        raw = bytes(context._ffi.buffer(output[0], int(output_len[0])))
+                        delta = raw[emitted_samples * 4 :]
+                        delta_samples = total_samples - emitted_samples
+                        emitted_samples = total_samples
+                        return GeneratedAudio(delta, int(sample_rate[0]), "pcm", delta_samples)
+
                     for _ in range(max_frames):
                         if cancel_callback is not None and cancel_callback():
                             raise MultimodalCancelledError("Audio generation was cancelled")
@@ -1170,93 +1550,193 @@ class Llama:
                         )
                         if code != 0:
                             raise RuntimeError("Native audio frame generation failed")
+                        frame = read_delta()
+                        if frame is not None:
+                            yield frame
                         if bool(stopped[0]) or next_state[0] == context._ffi.NULL:
                             break
                         h_state = next_state[0]
                         self._lib.llama_sampler_accept(self._sampler, sampled)
                         sampled = self._sample_token()
-
-                    sample_rate = context._ffi.new("int32_t *")
-                    output = context._ffi.new("const char **")
-                    output_len = context._ffi.new("size_t *")
-                    n_samples = context._ffi.new("int64_t *")
-                    if context._lib.mtmd_helper_gen_audio_get_output(
-                        helper, sample_rate, output, output_len, n_samples
-                    ) != 0:
-                        raise RuntimeError("Native audio output encoding failed")
-                    data = bytes(context._ffi.buffer(output[0], int(output_len[0])))
-                    return GeneratedAudio(data, int(sample_rate[0]), fmt, int(n_samples[0]))
+                    frame = read_delta()
+                    if frame is not None:
+                        yield frame
                 finally:
                     if helper != context._ffi.NULL:
                         context._lib.mtmd_helper_gen_audio_free(helper)
-                    if speaker != context._ffi.NULL:
-                        context._lib.mtmd_bitmap_free(speaker)
-        finally:
-            self._set_abort_callback(None)
+                    if speaker_bitmap != context._ffi.NULL:
+                        context._lib.mtmd_bitmap_free(speaker_bitmap)
+            finally:
+                self._set_abort_callback(None)
 
-    def get_embeddings(self, text: str) -> list[float]:
-        """
-        Get embeddings for input text.
+        return _stream()
 
-        Args:
-            text: Input text to embed.
+    def _embedding_dimension(self) -> int:
+        if self.pooling_type == POOLING_TYPES["rank"]:
+            fn = getattr(self._lib, "llama_model_n_cls_out", None)
+            if fn is not None:
+                return int(fn(self._model))
+        return self.n_embd_out
 
-        Returns:
-            List of embedding floats.
+    def _embedding_value(self, pointer: Any) -> list[float]:
+        if pointer == self._ffi.NULL:
+            raise RuntimeError("Native model did not return an embedding")
+        return [float(pointer[i]) for i in range(self._embedding_dimension())]
 
-        Note:
-            Model must be loaded with embedding=True for this to work properly.
-        """
+    def _get_embeddings_raw_batch(
+        self, texts: Sequence[str], *, per_token: bool = False
+    ) -> list[Any]:
         if not self._embedding:
             raise RuntimeError("Model was not loaded with embedding=True")
+        if not texts:
+            return []
+        if len(texts) > self.n_seq_max:
+            raise ValueError(
+                f"This context supports {self.n_seq_max} sequences; reload with "
+                f"n_seq_max >= {len(texts)} for a native batched request."
+            )
+        if per_token and self.pooling_type != POOLING_TYPES["none"]:
+            raise ValueError("per_token=True requires pooling_type='none' when loading the model")
+
+        token_lists = []
+        for text in texts:
+            if not isinstance(text, str):
+                raise TypeError("Each embedding input must be a string")
+            tokens = self.tokenize(text, add_special=True)
+            if not tokens:
+                raise ValueError("Embedding input produced no tokens")
+            if len(tokens) >= self._n_ctx:
+                raise ValueError("Embedding input exceeds the model context window")
+            token_lists.append(tokens)
 
         self._clear_context_state()
+        values: list[Any] = [[] for _ in token_lists] if per_token else [None] * len(token_lists)
+        positions = [0] * len(token_lists)
+        capacity = max(1, int(self._n_batch))
+        use_pooling = self.pooling_type != POOLING_TYPES["none"]
+        has_encoder_fn = getattr(self._lib, "llama_model_has_encoder", None)
+        use_encoder = has_encoder_fn is not None and bool(has_encoder_fn(self._model))
 
-        tokens = self.tokenize(text, add_special=True)
+        while any(position < len(tokens) for position, tokens in zip(positions, token_lists)):
+            active = [
+                index
+                for index, tokens in enumerate(token_lists)
+                if positions[index] < len(tokens)
+            ]
+            spans: list[tuple[int, int, int]] = []
+            remaining_capacity = capacity
 
-        # Pooled embeddings need the whole sequence in a single encode, so this
-        # batch cannot be chunked the way _eval_tokens is. Fail with a clear
-        # message instead of letting llama_encode abort the process.
-        if len(tokens) > self._n_batch:
-            raise ValueError(
-                f"Input is {len(tokens)} tokens but n_batch is {self._n_batch}; "
-                f"load the model with n_batch >= {len(tokens)} to embed this text."
-            )
+            # Include one token from each sequence first, when possible, so a
+            # normal request uses llama.cpp's multi-sequence batch path.
+            for index in active:
+                if remaining_capacity <= 0:
+                    break
+                spans.append((index, positions[index], 1))
+                remaining_capacity -= 1
 
-        batch = self._lib.llama_batch_init(len(tokens), 0, 1)
-        try:
-            batch.n_tokens = len(tokens)
-            for i, token in enumerate(tokens):
-                batch.token[i] = token
-                batch.pos[i] = i
-                batch.n_seq_id[i] = 1
-                batch.seq_id[i][0] = 0
-                batch.logits[i] = 0
+            cursor = 0
+            while remaining_capacity > 0 and active:
+                index = active[cursor % len(active)]
+                start = positions[index]
+                already = next((take for seq, pos, take in spans if seq == index and pos == start), 0)
+                available = len(token_lists[index]) - start - already
+                if available > 0:
+                    take = min(available, remaining_capacity)
+                    for span_index, (seq, pos, old_take) in enumerate(spans):
+                        if seq == index and pos == start:
+                            spans[span_index] = (seq, pos, old_take + take)
+                            break
+                    remaining_capacity -= take
+                cursor += 1
+                if cursor >= len(active) and all(
+                    len(token_lists[index]) - positions[index] - next(
+                        (take for seq, pos, take in spans if seq == index and pos == positions[index]), 0
+                    ) <= 0
+                    for index in active
+                ):
+                    break
 
-            batch.logits[len(tokens) - 1] = 1
+            total = sum(take for _, _, take in spans)
+            batch = self._lib.llama_batch_init(total, 0, max(1, self.n_seq_max))
+            try:
+                batch.n_tokens = total
+                batch_index = 0
+                output_indices: list[tuple[int, int, int]] = []
+                for index, start, take in spans:
+                    for local in range(take):
+                        token_index = start + local
+                        batch.token[batch_index] = token_lists[index][token_index]
+                        batch.pos[batch_index] = token_index
+                        batch.n_seq_id[batch_index] = 1
+                        batch.seq_id[batch_index][0] = index
+                        is_final = token_index + 1 == len(token_lists[index])
+                        batch.logits[batch_index] = 1 if (per_token or is_final) else 0
+                        if per_token or (not use_pooling and is_final) or (use_pooling and is_final):
+                            output_indices.append((index, batch_index, token_index))
+                        batch_index += 1
 
-            has_encoder = getattr(self._lib, "llama_model_has_encoder", None)
-            evaluate = (
-                self._lib.llama_encode
-                if has_encoder is not None and bool(has_encoder(self._model))
-                else self._lib.llama_decode
-            )
-            result = evaluate(self._ctx, batch)
-            if result != 0:
-                operation = "llama_encode" if evaluate == self._lib.llama_encode else "llama_decode"
-                raise RuntimeError(f"{operation} failed with code {result}")
+                evaluate = self._lib.llama_encode if use_encoder else self._lib.llama_decode
+                result = evaluate(self._ctx, batch)
+                if result != 0:
+                    operation = "llama_encode" if use_encoder else "llama_decode"
+                    raise RuntimeError(f"{operation} failed with code {result}")
 
-            embd_ptr = self._lib.llama_get_embeddings_seq(self._ctx, 0)
-            if embd_ptr == self._ffi.NULL:
-                embd_ptr = self._lib.llama_get_embeddings(self._ctx)
+                for index, input_index, token_index in output_indices:
+                    is_final = token_index + 1 == len(token_lists[index])
+                    if per_token:
+                        values[index].append(self._embedding_value(
+                            self._lib.llama_get_embeddings_ith(self._ctx, input_index)
+                        ))
+                    elif use_pooling and is_final:
+                        pooled = self._lib.llama_get_embeddings_seq(self._ctx, index)
+                        if pooled == self._ffi.NULL:
+                            pooled = self._lib.llama_get_embeddings_ith(self._ctx, input_index)
+                        values[index] = self._embedding_value(pooled)
+                    elif not use_pooling and is_final:
+                        values[index] = self._embedding_value(
+                            self._lib.llama_get_embeddings_ith(self._ctx, input_index)
+                        )
+            finally:
+                self._lib.llama_batch_free(batch)
 
-            if embd_ptr == self._ffi.NULL:
-                raise RuntimeError("Failed to get embeddings")
+            for index, start, take in spans:
+                positions[index] = start + take
 
-            n_embd = self.n_embd
-            return [embd_ptr[i] for i in range(n_embd)]
-        finally:
-            self._lib.llama_batch_free(batch)
+        if any(value is None or value == [] for value in values):
+            raise RuntimeError("Native model did not return all requested embeddings")
+        return values
+
+    @staticmethod
+    def _normalize_embedding_value(value: Any, mode: bool | int | str | None) -> Any:
+        if mode is None:
+            return value
+        from llama_cpp_py_sync.embeddings import normalize_embedding
+
+        if value and isinstance(value[0], (list, tuple)):
+            return [Llama._normalize_embedding_value(row, mode) for row in value]
+        return normalize_embedding(value, mode=mode)
+
+    def get_embeddings(
+        self,
+        text: str,
+        *,
+        normalize: bool | int | str | None = None,
+        per_token: bool = False,
+    ) -> Any:
+        """Get one pooled vector, or per-token vectors when requested."""
+        value = self._get_embeddings_raw_batch([text], per_token=per_token)[0]
+        return self._normalize_embedding_value(value, normalize)
+
+    def get_embeddings_batch(
+        self,
+        texts: Sequence[str],
+        *,
+        normalize: bool | int | str | None = None,
+        per_token: bool = False,
+    ) -> list[Any]:
+        """Get embeddings for multiple inputs in one native multi-sequence batch."""
+        values = self._get_embeddings_raw_batch(texts, per_token=per_token)
+        return [self._normalize_embedding_value(value, normalize) for value in values]
 
     def get_model_desc(self) -> str:
         """Get model description string."""

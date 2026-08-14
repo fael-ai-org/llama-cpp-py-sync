@@ -382,6 +382,7 @@ class MultimodalContext:
         self._lib = get_mtmd_lib()
         self._ctx = self._ffi.NULL
         self.limits = limits or MultimodalLimits()
+        self.use_gpu = bool(use_gpu)
         self.projector_path = self._resolve_projector_path(model, projector_path, discover_projector)
         self._progress_callback = None
         self._closed = False
@@ -394,7 +395,7 @@ class MultimodalContext:
             )
 
         params = self._lib.mtmd_context_params_default()
-        params.use_gpu = bool(use_gpu)
+        params.use_gpu = self.use_gpu
         params.print_timings = False
         if n_threads is not None:
             if n_threads <= 0:
@@ -503,7 +504,21 @@ class MultimodalContext:
             "audio_generation": supports_generation,
             "audio_sample_rate": int(gen_info.sample_rate) if supports_generation else self.audio_sample_rate,
             "audio_model_variant": None if gen_info.model_variant == self._ffi.NULL else self._ffi.string(gen_info.model_variant).decode("utf-8", "replace"),
+            "projector_offload": {"use_gpu": self.use_gpu},
+            "embedding_capabilities": self.model._embedding_capabilities()
+            if hasattr(self.model, "_embedding_capabilities")
+            else {},
             "generation_options": (["language", "speaker_reference", "top_k", "top_p", "seed", "max_frames", "output_format"] if supports_generation else []),
+            "stt_capabilities": {
+                "audio_input": self.supports_audio,
+            },
+            "tts_capabilities": {
+                "audio_generation": supports_generation,
+                "speaker_reference": supports_generation and self.supports_audio,
+                "incremental_step_generation": hasattr(self._lib, "mtmd_helper_gen_audio_step_gen"),
+                "native_audio_frame_api": hasattr(self._lib, "mtmd_gen_audio_process"),
+                "incremental_audio_output": hasattr(self._lib, "mtmd_gen_audio_process"),
+            },
         }
         self.model._multimodal_capabilities = dict(capabilities)
         return capabilities

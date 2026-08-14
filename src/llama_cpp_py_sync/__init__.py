@@ -16,8 +16,17 @@ from llama_cpp_py_sync.backends import (
     is_rocm_available,
     is_vulkan_available,
 )
-from llama_cpp_py_sync.embeddings import get_embeddings, get_embeddings_batch
-from llama_cpp_py_sync.llama import GeneratedAudio, Llama
+from llama_cpp_py_sync.embeddings import (
+    get_embeddings,
+    get_embeddings_batch,
+    normalize_embedding,
+    normalize_embeddings,
+)
+from llama_cpp_py_sync.llama import (
+    GeneratedAudio,
+    Llama,
+    TranscriptionResult,
+)
 from llama_cpp_py_sync.multimodal import (
     AudioValidationError,
     ImageValidationError,
@@ -34,6 +43,7 @@ __all__ = [
     "__llama_cpp_tag__",
     "Llama",
     "GeneratedAudio",
+    "TranscriptionResult",
     "MultimodalContext",
     "MultimodalError",
     "ProjectorCompatibilityError",
@@ -43,6 +53,8 @@ __all__ = [
     "MultimodalLimits",
     "get_embeddings",
     "get_embeddings_batch",
+    "normalize_embedding",
+    "normalize_embeddings",
     "get_available_backends",
     "is_cuda_available",
     "is_metal_available",

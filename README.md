@@ -147,6 +147,37 @@ with llama.Llama("model.gguf", n_gpu_layers=35) as llm:
     print(llm.generate("Once upon a time"))
 ```
 
+### Grammar-constrained and structured output
+
+The high-level generation methods accept the public llama.cpp GBNF grammar
+sampler through `grammar`. They also accept the upstream server-style
+`response_format` shapes for text, JSON objects, and common JSON Schema
+structures. Unsupported schema constraints raise an error instead of silently
+falling back to unconstrained generation.
+
+```python
+with llama.Llama("model.gguf", n_ctx=2048) as llm:
+    response = llm.create_chat_completion(
+        messages=[{"role": "user", "content": "Return a person object."}],
+        response_format={
+            "type": "json_schema",
+            "json_schema": {
+                "name": "person",
+                "schema": {
+                    "type": "object",
+                    "properties": {"name": {"type": "string"}},
+                    "required": ["name"],
+                    "additionalProperties": False,
+                },
+            },
+        },
+    )
+    print(response["choices"][0]["message"]["content"])
+
+    # A raw GBNF grammar can be used when the schema language is not enough.
+    print(llm.generate('Reply with "ok".', grammar='root ::= "ok"'))
+```
+
 ## Multimodal vision and audio
 
 Vision-language inference uses the current upstream `mtmd` C API. The language

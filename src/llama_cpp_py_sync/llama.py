@@ -13,6 +13,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Iterator, Mapping, Sequence
 
 from llama_cpp_py_sync._cffi_bindings import get_ffi, get_lib
+from llama_cpp_py_sync.constraints import resolve_grammar
 
 # `ggml_type` values accepted for the KV cache. Kept to the types that are
 # actually useful for type_k / type_v rather than mirroring the whole enum.
@@ -816,8 +817,10 @@ class Llama:
         repeat_penalty: float,
         repeat_last_n: int,
         seed: int | None,
+        grammar: str | None = None,
+        grammar_root: str = "root",
     ) -> None:
-        """Create the sampler chain used by both text and multimodal requests."""
+        """Create the sampler chain used by text and multimodal requests."""
         if hasattr(self, "_sampler") and self._sampler is not None:
             self._lib.llama_sampler_free(self._sampler)
 
@@ -845,6 +848,31 @@ class Llama:
         self._lib.llama_sampler_chain_add(
             self._sampler, self._lib.llama_sampler_init_temp(temperature)
         )
+        if grammar is not None:
+            init_grammar = getattr(self._lib, "llama_sampler_init_grammar", None)
+            if init_grammar is None:
+                self._lib.llama_sampler_free(self._sampler)
+                self._sampler = None
+                raise RuntimeError(
+                    "The loaded llama.cpp library does not expose llama_sampler_init_grammar"
+                )
+            if self._vocab is None:
+                self._lib.llama_sampler_free(self._sampler)
+                self._sampler = None
+                raise RuntimeError("A vocabulary handle is required for grammar sampling")
+            grammar_buffer = self._ffi.new("char[]", grammar.encode("utf-8"))
+            root_buffer = self._ffi.new("char[]", grammar_root.encode("utf-8"))
+            try:
+                grammar_sampler = init_grammar(self._vocab, grammar_buffer, root_buffer)
+            except BaseException:
+                self._lib.llama_sampler_free(self._sampler)
+                self._sampler = None
+                raise
+            if grammar_sampler == self._ffi.NULL:
+                self._lib.llama_sampler_free(self._sampler)
+                self._sampler = None
+                raise ValueError("Failed to parse the supplied GBNF grammar")
+            self._lib.llama_sampler_chain_add(self._sampler, grammar_sampler)
         dist_seed = (
             int.from_bytes(os.urandom(4), "little")
             if seed is None
@@ -1006,6 +1034,9 @@ class Llama:
         stop_sequences: list[str] | None = None,
         stream: bool = False,
         seed: int | None = None,
+        grammar: str | None = None,
+        grammar_root: str = "root",
+        response_format: Any = None,
         cancel_callback: Callable[[], bool] | None = None,
     ) -> str | Iterator[str]:
         """
@@ -1023,10 +1054,17 @@ class Llama:
             stop_sequences: List of strings that stop generation.
             stream: If True, return an iterator yielding tokens.
             seed: RNG seed for the final ``dist`` sampler; ``None`` for non-deterministic.
+            grammar: Optional GBNF grammar string applied during sampling.
+            grammar_root: Root rule name for ``grammar``; defaults to ``"root"``.
+            response_format: ``"text"``, ``"json_object"``, or an OpenAI-style
+                JSON-schema mapping converted to a native GBNF grammar.
 
         Returns:
             Generated text (or iterator if stream=True).
         """
+        generation_grammar, generation_grammar_root = resolve_grammar(
+            grammar, grammar_root, response_format
+        )
         self._clear_context_state()
         self._configure_generation_sampler(
             temperature,
@@ -1036,6 +1074,8 @@ class Llama:
             repeat_penalty,
             repeat_last_n,
             seed,
+            generation_grammar,
+            generation_grammar_root,
         )
         tokens = self.tokenize(prompt, add_special=True)
         if len(tokens) >= self._n_ctx:
@@ -1071,14 +1111,21 @@ class Llama:
         stream: bool = False,
         seed: int | None = None,
         multimodal_context: Any = None,
+        grammar: str | None = None,
+        grammar_root: str = "root",
+        response_format: Any = None,
         cancel_callback: Callable[[], bool] | None = None,
     ) -> dict[str, Any] | Iterator[dict[str, Any]]:
         """Create a chat completion with ordered text/image content parts.
 
         Images are accepted only when ``multimodal_context`` is supplied; a
         failed multimodal request is never silently converted to text-only
-        inference.
+        inference. ``grammar`` applies a native GBNF constraint, while
+        ``response_format`` provides text/JSON/JSON-schema convenience forms.
         """
+        generation_grammar, generation_grammar_root = resolve_grammar(
+            grammar, grammar_root, response_format
+        )
         if multimodal_context is not None and getattr(multimodal_context, "model", None) is not self:
             raise ValueError("multimodal_context belongs to a different Llama model")
 
@@ -1092,6 +1139,8 @@ class Llama:
                 repeat_penalty,
                 repeat_last_n,
                 seed,
+                generation_grammar,
+                generation_grammar_root,
             )
             prompt, images = self._format_chat_prompt(messages, multimodal_context)
             self._set_abort_callback(cancel_callback)

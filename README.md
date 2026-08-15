@@ -222,14 +222,6 @@ with llama.Llama("speech-model.gguf", n_ctx=4096) as model:
         structured=True,  # returns text/partial
     )
 
-    for frame in model.generate_audio_stream(
-        "Stream this sentence.",
-        projector_path="tts-mmproj.gguf",
-        language="en",
-    ):
-        # frame.data is raw float32 PCM for immediate playback.
-        print(frame.sample_rate, frame.n_samples)
-
     generated = model.generate_audio(
         "Hello from llama.cpp.",
         projector_path="tts-mmproj.gguf",
@@ -368,9 +360,9 @@ emb = llm.get_embeddings("Hello", normalize="l2")
 batch = llm.get_embeddings_batch(["Hello", "World"], normalize="none")
 token_vectors = llm.get_embeddings("Hello", per_token=True)  # pooling_type="none"
 
-# Structured ASR and incremental TTS
+# Structured ASR and complete TTS
 result = llm.transcribe("audio.wav", structured=True)
-audio_frames = llm.generate_audio_stream("Hello")
+generated_audio = llm.generate_audio("Hello")
 
 llm.close()
 

@@ -61,10 +61,11 @@ def test_asr_wrappers_are_structured_and_do_not_leak():
 
 
 def test_public_audio_signatures_only_expose_upstream_controls():
-    for method_name in ("generate_audio", "generate_audio_stream"):
-        parameters = inspect.signature(getattr(Llama, method_name)).parameters
-        assert "speaker" not in parameters
-        assert "instruct" not in parameters
+    parameters = inspect.signature(Llama.generate_audio).parameters
+    assert "speaker" not in parameters
+    assert "instruct" not in parameters
+    assert "stream" not in parameters
+    assert not hasattr(Llama, "generate_audio_stream")
 
 
 def test_capabilities_do_not_advertise_unavailable_modalities_or_operations():

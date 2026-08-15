@@ -515,9 +515,6 @@ class MultimodalContext:
             "tts_capabilities": {
                 "audio_generation": supports_generation,
                 "speaker_reference": supports_generation and self.supports_audio,
-                "incremental_step_generation": hasattr(self._lib, "mtmd_helper_gen_audio_step_gen"),
-                "native_audio_frame_api": hasattr(self._lib, "mtmd_gen_audio_process"),
-                "incremental_audio_output": hasattr(self._lib, "mtmd_gen_audio_process"),
             },
         }
         self.model._multimodal_capabilities = dict(capabilities)

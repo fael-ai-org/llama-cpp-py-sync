@@ -1,5 +1,5 @@
 {
-  "llama_cpp_commit": "1692f9e50bb20fd96b963af38a282daf78feea64",
+  "llama_cpp_commit": "37a215c9e909822fb8ebb72b5bd37623b0b9611f",
   "mtmd_abi": "tools/mtmd/mtmd.h and tools/mtmd/mtmd-helper.h C API",
   "libraries": {
     "core": "libllama",

@@ -33,5 +33,12 @@ def test_partial_rebuilds_do_not_publish_to_pypi():
     workflow = WORKFLOW.read_text(encoding="utf-8")
     publish_section = workflow.split("- name: Publish to PyPI", 1)[1]
 
-    assert "github.event_name == 'push'" in publish_section
+    assert "startsWith(github.ref, 'refs/tags/')" in publish_section
     assert "build_target == 'all'" in publish_section
+    assert "github.event_name == 'push'" not in publish_section
+
+    pypi_artifact_condition = (
+        "if: startsWith(github.ref, 'refs/tags/') && "
+        "needs.check-upstream.outputs.build_target == 'all'"
+    )
+    assert workflow.split("- name: Publish to PyPI", 1)[0].count(pypi_artifact_condition) == 2

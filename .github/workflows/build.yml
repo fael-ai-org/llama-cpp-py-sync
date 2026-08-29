@@ -253,6 +253,10 @@ jobs:
     needs: [check-upstream, validate-bindings]
     if: needs.check-upstream.outputs.should_build == 'true' && (needs.check-upstream.outputs.build_target == 'all' || needs.check-upstream.outputs.build_target == 'linux-x86_64-cpu')
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
     steps:
       - uses: actions/checkout@v4
       
@@ -309,22 +313,40 @@ jobs:
           done
           rm -f $ORIGINAL_WHEELS
 
+      - name: Create Linux test signatures for final wheel
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gnupg
+          python scripts/sign_linux_artifacts.py \
+            --root dist \
+            --public-key dist/LLaMA-Linux-CPU-Test-Signing.asc \
+            --manifest dist/SHA256SUMS-linux-x86_64-cpu
+
       - name: Smoke test installed wheel
         run: |
           python -m pip install --upgrade pip
           python -m pip install --force-reinstall dist/*.whl
           python -c "from llama_cpp_py_sync._cffi_bindings import get_lib, get_mtmd_lib; get_lib(); get_mtmd_lib(); print('smoke-ok')"
       
+      - name: Attest final wheel
+        uses: actions/attest@v4
+        with:
+          subject-path: dist/*.whl
+
       - name: Upload wheel
         uses: actions/upload-artifact@v4
         with:
           name: wheel-linux-x86_64-cpu
-          path: dist/*.whl
+          path: dist/*
 
   build-linux-x86_64-cuda:
     needs: [check-upstream, validate-bindings]
     if: needs.check-upstream.outputs.should_build == 'true' && (needs.check-upstream.outputs.build_target == 'all' || needs.check-upstream.outputs.build_target == 'linux-x86_64-cuda')
     runs-on: ubuntu-22.04
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
     steps:
       - uses: actions/checkout@v4
 
@@ -488,6 +510,15 @@ jobs:
           done
           rm -f $ORIGINAL_WHEELS
 
+      - name: Create Linux test signatures for final wheel
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gnupg
+          python scripts/sign_linux_artifacts.py \
+            --root dist \
+            --public-key dist/LLaMA-Linux-CUDA-Test-Signing.asc \
+            --manifest dist/SHA256SUMS-linux-x86_64-cuda-cu128
+
       - name: Enforce GitHub release size limit
         run: |
           python - <<'PY'
@@ -507,16 +538,25 @@ jobs:
           python -m pip install --force-reinstall dist/*.whl
           python -c "from llama_cpp_py_sync._cffi_bindings import get_lib, get_mtmd_lib; get_lib(); get_mtmd_lib(); print('smoke-ok')"
       
+      - name: Attest final wheel
+        uses: actions/attest@v4
+        with:
+          subject-path: dist/*.whl
+
       - name: Upload wheel
         uses: actions/upload-artifact@v4
         with:
           name: wheel-linux-x86_64-cuda-cu128
-          path: dist/*.whl
+          path: dist/*
 
   build-linux-x86_64-vulkan:
     needs: [check-upstream, validate-bindings]
     if: needs.check-upstream.outputs.should_build == 'true' && (needs.check-upstream.outputs.build_target == 'all' || needs.check-upstream.outputs.build_target == 'linux-x86_64-vulkan')
     runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
     steps:
       - uses: actions/checkout@v4
       
@@ -578,6 +618,15 @@ jobs:
           done
           rm -f $ORIGINAL_WHEELS
 
+      - name: Create Linux test signatures for final wheel
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gnupg
+          python scripts/sign_linux_artifacts.py \
+            --root dist \
+            --public-key dist/LLaMA-Linux-Vulkan-Test-Signing.asc \
+            --manifest dist/SHA256SUMS-linux-x86_64-vulkan
+
       - name: Smoke test installed wheel
         run: |
           python -m pip install --upgrade pip
@@ -585,16 +634,25 @@ jobs:
           python -c "from llama_cpp_py_sync._cffi_bindings import get_lib, get_mtmd_lib; get_lib(); get_mtmd_lib(); print('smoke-ok')"
           python -c "from llama_cpp_py_sync.backends import get_backend_info; info=get_backend_info(); assert info.vulkan, info; print('vulkan-backend-ok')"
       
+      - name: Attest final wheel
+        uses: actions/attest@v4
+        with:
+          subject-path: dist/*.whl
+
       - name: Upload wheel
         uses: actions/upload-artifact@v4
         with:
           name: wheel-linux-x86_64-vulkan
-          path: dist/*.whl
+          path: dist/*
 
   build-macos-arm64:
     needs: [check-upstream, validate-bindings]
     if: needs.check-upstream.outputs.should_build == 'true' && (needs.check-upstream.outputs.build_target == 'all' || needs.check-upstream.outputs.build_target == 'macos-arm64-metal')
     runs-on: macos-14
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
     steps:
       - uses: actions/checkout@v4
       
@@ -632,6 +690,9 @@ jobs:
       - name: Validate llama.cpp exports
         run: |
           python scripts/validate_llama_exports.py
+
+      - name: Ad-hoc sign LLaMA-owned macOS native artifacts (test-only)
+        run: bash scripts/sign_macos_ad_hoc.sh src/llama_cpp_py_sync
       
       - name: Generate version
         run: |
@@ -656,6 +717,11 @@ jobs:
           python -m pip install --force-reinstall dist/*.whl
           python -c "from llama_cpp_py_sync._cffi_bindings import get_lib, get_mtmd_lib; get_lib(); get_mtmd_lib(); print('smoke-ok')"
       
+      - name: Attest final wheel
+        uses: actions/attest@v4
+        with:
+          subject-path: dist/*.whl
+
       - name: Upload wheel
         uses: actions/upload-artifact@v4
         with:
@@ -666,6 +732,10 @@ jobs:
     needs: [check-upstream, validate-bindings]
     if: needs.check-upstream.outputs.should_build == 'true' && (needs.check-upstream.outputs.build_target == 'all' || needs.check-upstream.outputs.build_target == 'macos-arm64-vulkan')
     runs-on: macos-14
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
     steps:
       - uses: actions/checkout@v4
 
@@ -709,6 +779,9 @@ jobs:
         run: |
           python scripts/validate_llama_exports.py
 
+      - name: Ad-hoc sign LLaMA-owned macOS native artifacts (test-only)
+        run: bash scripts/sign_macos_ad_hoc.sh src/llama_cpp_py_sync
+
       - name: Generate version
         run: |
           python scripts/auto_version.py --update
@@ -733,6 +806,11 @@ jobs:
           python -c "from llama_cpp_py_sync._cffi_bindings import get_lib, get_mtmd_lib; get_lib(); get_mtmd_lib(); print('smoke-ok')"
           python -c "from llama_cpp_py_sync.backends import get_backend_info; info=get_backend_info(); assert info.vulkan, info; print('vulkan-backend-ok')"
 
+      - name: Attest final wheel
+        uses: actions/attest@v4
+        with:
+          subject-path: dist/*.whl
+
       - name: Upload wheel
         uses: actions/upload-artifact@v4
         with:
@@ -743,6 +821,10 @@ jobs:
     needs: [check-upstream, validate-bindings]
     if: needs.check-upstream.outputs.should_build == 'true' && (needs.check-upstream.outputs.build_target == 'all' || needs.check-upstream.outputs.build_target == 'macos-x86_64-cpu')
     runs-on: macos-15-intel
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
     steps:
       - uses: actions/checkout@v4
       
@@ -804,7 +886,10 @@ jobs:
             Copy-Item -Force $d.FullName $packageDir
             Write-Host "Bundled llama.cpp dep: $($d.FullName)"
           }
-      
+
+      - name: Ad-hoc sign LLaMA-owned macOS native artifacts (test-only)
+        run: bash scripts/sign_macos_ad_hoc.sh src/llama_cpp_py_sync
+
       - name: Generate version
         run: |
           python scripts/auto_version.py --update
@@ -828,6 +913,11 @@ jobs:
           python -m pip install --force-reinstall dist/*.whl
           python -c "from llama_cpp_py_sync._cffi_bindings import get_lib, get_mtmd_lib; get_lib(); get_mtmd_lib(); print('smoke-ok')"
       
+      - name: Attest final wheel
+        uses: actions/attest@v4
+        with:
+          subject-path: dist/*.whl
+
       - name: Upload wheel
         uses: actions/upload-artifact@v4
         with:
@@ -838,6 +928,10 @@ jobs:
     needs: [check-upstream, validate-bindings]
     if: needs.check-upstream.outputs.should_build == 'true' && (needs.check-upstream.outputs.build_target == 'all' || needs.check-upstream.outputs.build_target == 'macos-x86_64-vulkan')
     runs-on: macos-15-intel
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
     steps:
       - uses: actions/checkout@v4
       
@@ -880,6 +974,9 @@ jobs:
       - name: Validate llama.cpp exports
         run: |
           python scripts/validate_llama_exports.py
+
+      - name: Ad-hoc sign LLaMA-owned macOS native artifacts (test-only)
+        run: bash scripts/sign_macos_ad_hoc.sh src/llama_cpp_py_sync
       
       - name: Generate version
         run: |
@@ -905,6 +1002,11 @@ jobs:
           python -c "from llama_cpp_py_sync._cffi_bindings import get_lib, get_mtmd_lib; get_lib(); get_mtmd_lib(); print('smoke-ok')"
           python -c "from llama_cpp_py_sync.backends import get_backend_info; info=get_backend_info(); assert info.vulkan, info; print('vulkan-backend-ok')"
       
+      - name: Attest final wheel
+        uses: actions/attest@v4
+        with:
+          subject-path: dist/*.whl
+
       - name: Upload wheel
         uses: actions/upload-artifact@v4
         with:
@@ -915,6 +1017,10 @@ jobs:
     needs: [check-upstream, validate-bindings]
     if: needs.check-upstream.outputs.should_build == 'true' && (needs.check-upstream.outputs.build_target == 'all' || needs.check-upstream.outputs.build_target == 'windows-x64-cpu')
     runs-on: windows-2022
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
     steps:
       - uses: actions/checkout@v4
       
@@ -1055,7 +1161,21 @@ jobs:
           if ($missing.Count -gt 0) {
             Write-Warning "Some runtime DLLs were not found and could not be bundled (this is expected if CUDA/Vulkan SDKs are not installed on the runner): $($missing -join ', ')"
           }
-      
+
+      - name: Self-sign LLaMA-owned Windows native artifacts (test-only)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          ./scripts/sign_windows_self_signed.ps1 `
+            -Root 'src\llama_cpp_py_sync' `
+            -CertificateOutput (Join-Path $env:RUNNER_TEMP 'llama-windows-x64-cpu-test.cer')
+
+      - name: Upload Windows test certificate
+        uses: actions/upload-artifact@v4
+        with:
+          name: certificate-windows-x64-cpu-test
+          path: ${{ runner.temp }}/llama-windows-x64-cpu-test.cer
+
       - name: Generate version
         run: |
           python scripts/auto_version.py --update
@@ -1084,6 +1204,11 @@ jobs:
           python -m pip install --force-reinstall $wheel.FullName
           python -c "from llama_cpp_py_sync._cffi_bindings import get_lib, get_mtmd_lib; get_lib(); get_mtmd_lib(); print('smoke-ok')"
       
+      - name: Attest final wheel
+        uses: actions/attest@v4
+        with:
+          subject-path: dist/*win_amd64.whl
+
       - name: Upload wheel
         uses: actions/upload-artifact@v4
         with:
@@ -1094,6 +1219,10 @@ jobs:
     needs: [check-upstream, validate-bindings]
     if: needs.check-upstream.outputs.should_build == 'true' && (needs.check-upstream.outputs.build_target == 'all' || needs.check-upstream.outputs.build_target == 'windows-x64-cuda')
     runs-on: windows-2022
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
     steps:
       - uses: actions/checkout@v4
       
@@ -1276,6 +1405,20 @@ jobs:
             }
             Write-Host 'Static CUDA wheel export validation passed (runner has no NVIDIA driver).'
           }
+
+      - name: Self-sign LLaMA-owned Windows native artifacts (test-only)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          ./scripts/sign_windows_self_signed.ps1 `
+            -Root 'src\llama_cpp_py_sync' `
+            -CertificateOutput (Join-Path $env:RUNNER_TEMP 'llama-windows-x64-cuda-test.cer')
+
+      - name: Upload Windows test certificate
+        uses: actions/upload-artifact@v4
+        with:
+          name: certificate-windows-x64-cuda-test
+          path: ${{ runner.temp }}/llama-windows-x64-cuda-test.cer
       
       - name: Generate version
         run: |
@@ -1353,6 +1496,11 @@ jobs:
           Write-Host "ggml-cuda.dll path: $ggmlCudaDll"
           if (Test-Path $ggmlCudaDll) { dumpbin /dependents $ggmlCudaDll } else { Write-Warning "ggml-cuda.dll not found" }
       
+      - name: Attest final wheel
+        uses: actions/attest@v4
+        with:
+          subject-path: dist/*win_amd64.whl
+
       - name: Upload wheel
         uses: actions/upload-artifact@v4
         with:
@@ -1363,6 +1511,10 @@ jobs:
     needs: [check-upstream, validate-bindings]
     if: needs.check-upstream.outputs.should_build == 'true' && (needs.check-upstream.outputs.build_target == 'all' || needs.check-upstream.outputs.build_target == 'windows-x64-vulkan')
     runs-on: windows-2022
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
     steps:
       - uses: actions/checkout@v4
       
@@ -1486,6 +1638,20 @@ jobs:
           if ($missing.Count -gt 0) {
             Write-Warning "Some runtime DLLs were not found and could not be bundled: $($missing -join ', ')"
           }
+
+      - name: Self-sign LLaMA-owned Windows native artifacts (test-only)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          ./scripts/sign_windows_self_signed.ps1 `
+            -Root 'src\llama_cpp_py_sync' `
+            -CertificateOutput (Join-Path $env:RUNNER_TEMP 'llama-windows-x64-vulkan-test.cer')
+
+      - name: Upload Windows test certificate
+        uses: actions/upload-artifact@v4
+        with:
+          name: certificate-windows-x64-vulkan-test
+          path: ${{ runner.temp }}/llama-windows-x64-vulkan-test.cer
       
       - name: Generate version
         run: |
@@ -1516,6 +1682,11 @@ jobs:
           python -c "from llama_cpp_py_sync._cffi_bindings import get_lib, get_mtmd_lib; get_lib(); get_mtmd_lib(); print('smoke-ok')"
           python -c "from llama_cpp_py_sync.backends import get_backend_info; info=get_backend_info(); assert info.vulkan, info; print('vulkan-backend-ok')"
       
+      - name: Attest final wheel
+        uses: actions/attest@v4
+        with:
+          subject-path: dist/*win_amd64.whl
+
       - name: Upload wheel
         uses: actions/upload-artifact@v4
         with:
@@ -1562,7 +1733,7 @@ jobs:
         if: needs.check-upstream.outputs.upstream_tag_exists == 'true'
         with:
           tag_name: ${{ needs.check-upstream.outputs.release_tag }}
-          files: dist/*.whl
+          files: dist/*
           fail_on_unmatched_files: true
           overwrite_files: true
           body: |

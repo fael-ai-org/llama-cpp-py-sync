@@ -111,3 +111,12 @@ src/llama_cpp_py_sync/*.pyd
 
 # GitHub instructions (keep workflows tracked)
 .github/instructions/
+
+# Signing material and temporary certificate stores. Private keys must never
+# be committed; this is only a last-resort guard against accidental staging.
+.signing/
+signing-material/
+*.pfx
+*.p12
+*.key
+*.private.pem

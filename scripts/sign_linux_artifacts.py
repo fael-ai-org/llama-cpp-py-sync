@@ -16,7 +16,6 @@ import subprocess
 import tempfile
 from pathlib import Path
 
-
 KEY_UID = "Ephemeral CI Test Key (TEST ONLY)"
 
 

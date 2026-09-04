@@ -42,8 +42,21 @@ jobs:
       - name: Run linting
         run: ruff check src/ scripts/
 
+  validate-api:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version-file: .python-version
+
+      - name: Validate high-level Python vs CFFI cdef
+        run: python scripts/validate_high_level_api.py
+
   test:
-    needs: config
+    needs: [config, validate-api]
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false

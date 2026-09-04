@@ -158,8 +158,6 @@ def main() -> int:
             [
                 python_exe,
                 str(repo_root / "scripts" / "validate_high_level_api.py"),
-                "--module",
-                "src/llama_cpp_py_sync/embeddings.py",
             ]
         )
 

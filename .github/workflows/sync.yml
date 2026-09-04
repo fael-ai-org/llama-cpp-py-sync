@@ -129,7 +129,29 @@ jobs:
         if: steps.check.outputs.needs_sync == 'true'
         run: |
           python scripts/auto_version.py --update
-      
+
+      - name: Validate regenerated CFFI against llama.cpp headers
+        if: steps.check.outputs.needs_sync == 'true'
+        run: |
+          python scripts/validate_cffi_surface.py --check-structs --check-enums --check-signatures
+
+      - name: Validate high-level Python against regenerated CFFI
+        if: steps.check.outputs.needs_sync == 'true'
+        run: |
+          python scripts/validate_high_level_api.py
+
+      - name: Keep regenerated bindings for a manual wrapper fix
+        if: failure() && steps.check.outputs.needs_sync == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: llama-cpp-sync-regenerated-bindings
+          path: |
+            .llama_cpp_sync_state.json
+            src/llama_cpp_py_sync/_cffi_bindings.py
+            src/llama_cpp_py_sync/_version.py
+            src/llama_cpp_py_sync/native_manifest.json
+          if-no-files-found: ignore
+
       - name: Commit changes
         if: steps.check.outputs.needs_sync == 'true'
         run: |

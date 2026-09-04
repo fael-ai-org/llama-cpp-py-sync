@@ -425,13 +425,22 @@ llama.is_blas_available()
 
 ### Bindings Validation (API Surface)
 
-To keep the Python bindings aligned with upstream, CI runs a validation step that compares upstream `llama.h` to the generated CFFI `cdef`.
+CI treats a wrapper/cdef mismatch as a hard failure **before** wheel jobs and
+**before** an upstream sync commit. Fix the handwritten high-level modules,
+push again, and the pipeline continues. GitHub emails the failed Actions run.
 
-It checks:
+Two checks:
 
-- Public function coverage (missing/extra)
-- Struct and enum coverage (missing fields/members)
-- Function signatures (return + parameter types)
+1. Header vs CFFI (`validate_cffi_surface.py`): public functions, structs/enums, signatures.
+2. High-level Python vs CFFI (`validate_high_level_api.py`): `llama.py`,
+   `embeddings.py`, and `multimodal.py` must only use cdef names and must pass
+   at least as many positional arguments as the cdef (this is the TTS-style
+   arity trap).
+
+`Tests` runs the high-level check on every push/PR. `Sync Upstream` regenerates
+bindings, then both checks; if the wrapper is stale it fails without pushing
+and uploads the regenerated files as an artifact. `Build Wheels` requires the
+same pair before any platform build.
 
 Local run (after syncing upstream headers):
 
@@ -439,6 +448,7 @@ Local run (after syncing upstream headers):
 python scripts/sync_upstream.py
 python scripts/gen_bindings.py --commit-sha "$(python scripts/sync_upstream.py --sha)"
 python scripts/validate_cffi_surface.py --check-structs --check-enums --check-signatures
+python scripts/validate_high_level_api.py
 ```
 
 ### CFFI ABI Mode

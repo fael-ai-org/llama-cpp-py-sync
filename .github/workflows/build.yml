@@ -243,7 +243,7 @@ jobs:
 
       - name: Validate high-level Python vs CFFI cdef
         run: |
-          python scripts/validate_high_level_api.py --module src/llama_cpp_py_sync/embeddings.py
+          python scripts/validate_high_level_api.py
 
       - name: Ensure committed bindings are up-to-date
         run: |

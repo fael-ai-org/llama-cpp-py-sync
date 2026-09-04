@@ -539,14 +539,32 @@ class MultimodalContext:
         if self._closed or self._ctx == self._ffi.NULL:
             raise MultimodalError("MultimodalContext has already been closed")
 
+    def _mtmd_helper_init_opt(self) -> Any:
+        getter = getattr(self._lib, "mtmd_helper_init_opt_default", None)
+        if getter is None:
+            raise MultimodalError("Native bitmap helper is missing init options")
+        return getter()
+
+    def _mtmd_helper_bitmap_init_from_buf(self, buf: Any, length: int, placeholder: bool = False) -> Any:
+        fn = self._lib.mtmd_helper_bitmap_init_from_buf
+        args: list[Any] = [self._ctx, buf, length, placeholder]
+        if len(self._ffi.typeof(fn).args) >= 5:
+            args.append(self._mtmd_helper_init_opt())
+        return fn(*args)
+
+    def _mtmd_helper_bitmap_init_from_file(self, fname: bytes, placeholder: bool = False) -> Any:
+        fn = self._lib.mtmd_helper_bitmap_init_from_file
+        args: list[Any] = [self._ctx, fname, placeholder]
+        if len(self._ffi.typeof(fn).args) >= 4:
+            args.append(self._mtmd_helper_init_opt())
+        return fn(*args)
+
     def create_bitmap(self, mime_type: str, data: bytes | bytearray | memoryview) -> Any:
         """Validate and decode one bounded image into an owned native bitmap."""
         self._ensure_open()
         payload = _validate_image(mime_type, data, self.limits)
         buf = self._ffi.new("unsigned char[]", payload.data)
-        wrapper = self._lib.mtmd_helper_bitmap_init_from_buf(
-            self._ctx, buf, len(payload.data), False
-        )
+        wrapper = self._mtmd_helper_bitmap_init_from_buf(buf, len(payload.data), False)
         if wrapper.bitmap == self._ffi.NULL:
             raise ImageValidationError("Native image preprocessing failed")
         return wrapper.bitmap
@@ -570,8 +588,8 @@ class MultimodalContext:
                 raise AudioValidationError("Audio file must not be empty")
             if size > self.limits.max_audio_bytes:
                 raise AudioValidationError("Audio file exceeds the configured byte limit")
-            wrapper = self._lib.mtmd_helper_bitmap_init_from_file(
-                self._ctx, str(path.resolve()).encode("utf-8"), False
+            wrapper = self._mtmd_helper_bitmap_init_from_file(
+                str(path.resolve()).encode("utf-8"), False
             )
         elif isinstance(audio, (bytes, bytearray, memoryview)):
             raw = bytes(audio)
@@ -580,9 +598,7 @@ class MultimodalContext:
             if len(raw) > self.limits.max_audio_bytes:
                 raise AudioValidationError("Audio data exceeds the configured byte limit")
             buf = self._ffi.new("unsigned char[]", raw)
-            wrapper = self._lib.mtmd_helper_bitmap_init_from_buf(
-                self._ctx, buf, len(raw), False
-            )
+            wrapper = self._mtmd_helper_bitmap_init_from_buf(buf, len(raw), False)
         else:
             raise TypeError("audio must be a local path or bytes-like encoded audio")
         if wrapper.bitmap == self._ffi.NULL or not bool(

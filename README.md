@@ -442,6 +442,10 @@ bindings, then both checks; if the wrapper is stale it fails without pushing
 and uploads the regenerated files as an artifact. `Build Wheels` requires the
 same pair before any platform build.
 
+Wheel CMake keeps `-DLLAMA_BUILD_SERVER=OFF`, `-DLLAMA_CURL=OFF`, and
+`-DGGML_RPC=OFF`. After each native build, `validate_llama_exports.py` fails
+if a server/RPC binary was packaged or `llama_supports_rpc()` is true.
+
 Local run (after syncing upstream headers):
 
 ```bash

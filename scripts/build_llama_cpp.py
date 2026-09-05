@@ -1018,7 +1018,9 @@ def get_cmake_args(
         "-DLLAMA_BUILD_TOOLS=OFF",
         "-DLLAMA_BUILD_APP=OFF",
         "-DLLAMA_BUILD_MTMD=ON",
+        # Inference wheels must not compile llama-server, HTTP download, or ggml RPC.
         "-DLLAMA_CURL=OFF",
+        "-DGGML_RPC=OFF",
     ]
 
     if platform.system() == "Linux":

@@ -24,6 +24,23 @@ def test_all_wheel_builds_disable_native_cpu_optimization(monkeypatch) -> None:
     assert args.count("-DGGML_NATIVE=OFF") == 1
 
 
+def test_wheel_builds_disable_server_curl_and_rpc(monkeypatch) -> None:
+    monkeypatch.delenv("GITHUB_ACTIONS", raising=False)
+    backends = {
+        "cuda": (False, None),
+        "rocm": (False, None),
+        "vulkan": (False, None),
+        "metal": (False, None),
+        "blas": (False, None),
+    }
+
+    args = get_cmake_args(backends)
+
+    assert "-DLLAMA_BUILD_SERVER=OFF" in args
+    assert "-DLLAMA_CURL=OFF" in args
+    assert "-DGGML_RPC=OFF" in args
+
+
 def test_macos_dylibs_are_resigned_after_loader_path_changes(tmp_path, monkeypatch) -> None:
     first = tmp_path / "libFirst.dylib"
     second = tmp_path / "libSecond.dylib"

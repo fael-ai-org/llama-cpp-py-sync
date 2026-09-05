@@ -94,6 +94,41 @@ def _require_symbol(lib: ctypes.CDLL, name: str) -> None:
         raise RuntimeError(f"Missing required export: {name}") from e
 
 
+_FORBIDDEN_NATIVE_NAME = re.compile(
+    r"(?i)^(lib)?("
+    r"ggml[-_.]?rpc|"
+    r"llama[-_.]?server|"
+    r"llama[-_.]?rpc|"
+    r"rpc[-_.]?server"
+    r")([.-].*)?$"
+)
+
+
+def is_forbidden_native_artifact(name: str) -> bool:
+    """Return True when a packaged native file is an RPC or llama-server binary."""
+    return _FORBIDDEN_NATIVE_NAME.match(Path(name).name) is not None
+
+
+def forbidden_native_artifacts(names: list[str]) -> list[str]:
+    return sorted(
+        {Path(name).name for name in names if is_forbidden_native_artifact(name)}
+    )
+
+
+def _packaged_native_names(package_dir: Path) -> list[str]:
+    if not package_dir.is_dir():
+        return []
+    return [path.name for path in package_dir.iterdir() if path.is_file()]
+
+
+def _require_rpc_disabled(llama) -> None:
+    supports_rpc = getattr(llama, "llama_supports_rpc", None)
+    if supports_rpc is None:
+        raise RuntimeError("Missing required export: llama_supports_rpc")
+    if bool(supports_rpc()):
+        raise RuntimeError("llama_supports_rpc() is true; wheels must keep GGML_RPC=OFF")
+
+
 def _validate_penalties_sampler_cffi(project_root: Path) -> None:
     """Construct and free a sampler through the generated CFFI declaration.
 
@@ -109,6 +144,7 @@ def _validate_penalties_sampler_cffi(project_root: Path) -> None:
 
     ffi = get_ffi()
     llama = get_lib()
+    _require_rpc_disabled(llama)
     sampler = llama.llama_sampler_init_penalties(128, 64, 1.1, 0.0, 0.0)
     try:
         if sampler == ffi.NULL:
@@ -136,6 +172,14 @@ def main() -> int:
     args = parser.parse_args()
 
     root = _project_root()
+    package_dir = root / "src" / "llama_cpp_py_sync"
+    forbidden = forbidden_native_artifacts(_packaged_native_names(package_dir))
+    if forbidden:
+        raise RuntimeError(
+            "Packaged native artifacts include RPC or llama-server binaries: "
+            + ", ".join(forbidden)
+        )
+
     lib_path = args.lib or _default_library_path(root)
 
     required = [

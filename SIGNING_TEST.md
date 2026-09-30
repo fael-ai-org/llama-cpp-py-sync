@@ -1,3 +1,20 @@
+<!-- FAEL-DOCUMENT-METADATA
+{
+  "schema_version": 1,
+  "repository": "llama-cpp-py-sync",
+  "path": "SIGNING_TEST.md",
+  "owner": "llama-cpp-py-sync-build",
+  "lifecycle": "active",
+  "canonical": true,
+  "canonical_path": null,
+  "review_status": "current",
+  "last_reviewed": "2026-10-01",
+  "review_due": "2026-12-30",
+  "notes": "Repository-local platform test signing, keyless wheel attestations and wheel-only release uploads; Linux GPG test signing removed.",
+  "fingerprint": "fael-doc-v1:sha256:5fbe52678603cfeef9ef8a4c618ceaf3671457fb7fabd851f1a5a6240155ae5a"
+}
+FAEL-DOCUMENT-METADATA -->
+
 # Test-only artifact signing
 
 The Windows wheel jobs create an ephemeral self-signed Authenticode
@@ -10,10 +27,9 @@ The workflow signs LLaMA-owned `llama*.dll`, `ggml*.dll`, `mtmd*.dll`, `.pyd`,
 and executable files. Microsoft, CUDA, and Vulkan redistributables are not
 re-signed; their vendor identity must remain intact.
 
-Linux wheel jobs create a short-lived GPG key and publish detached `.asc`
-signatures, a per-variant SHA-256 manifest and signature, and the corresponding
-public test key. This is artifact verification only; Linux does not
-automatically show a trusted publisher for these signatures.
+Linux wheel jobs do not generate GPG test keys, detached signatures, or checksum
+manifests. GitHub releases publish only wheels. Linux wheels retain the keyless
+GitHub artifact attestations described below.
 
 macOS wheel jobs apply an ad-hoc code signature to LLaMA-owned Mach-O files
 before packaging. Ad-hoc signing detects later modification but does not
@@ -38,7 +54,7 @@ the certificate has no trusted chain or reputation. No private certificate,
 PFX, password, or key file belongs in this repository. The ignore rules are
 only an accidental-staging guard.
 
-The ephemeral Windows certificate and Linux GPG key deliberately use generic
-`TEST ONLY` identities. Personal names, company publisher names, and contact
+The ephemeral Windows certificate deliberately uses a generic
+`TEST ONLY` identity. Personal names, company publisher names, and contact
 addresses are not embedded in the test-signing scripts. A self-signed subject
 name is not an authenticated identity and must never be presented as one.

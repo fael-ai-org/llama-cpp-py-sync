@@ -37,6 +37,8 @@ typedef struct llama_memory_i * llama_memory_t;
 struct ggml_tensor;
 typedef void * ggml_threadpool_t;
 typedef void * ggml_backend_dev_t;
+typedef void * ggml_backend_t;
+typedef void * ggml_backend_reg_t;
 typedef void * ggml_backend_buffer_type_t;
 enum ggml_log_level {
     GGML_LOG_LEVEL_NONE = 0,
@@ -1297,6 +1299,37 @@ int32_t mtmd_helper_gen_audio_get_output(
                         const char ** out_data,
                         size_t * out_data_len,
                         int64_t * out_n_samples);
+enum ggml_backend_dev_type {
+    GGML_BACKEND_DEVICE_TYPE_CPU,
+    GGML_BACKEND_DEVICE_TYPE_GPU,
+    GGML_BACKEND_DEVICE_TYPE_IGPU,
+    GGML_BACKEND_DEVICE_TYPE_ACCEL,
+    GGML_BACKEND_DEVICE_TYPE_META,
+};
+const char *                  ggml_backend_dev_name(ggml_backend_dev_t device);
+const char *                  ggml_backend_dev_description(ggml_backend_dev_t device);
+void                          ggml_backend_dev_memory(ggml_backend_dev_t device, size_t * free, size_t * total);
+enum ggml_backend_dev_type    ggml_backend_dev_type(ggml_backend_dev_t device);
+size_t             ggml_backend_reg_dev_count(ggml_backend_reg_t reg);
+ggml_backend_dev_t ggml_backend_reg_dev_get(ggml_backend_reg_t reg, size_t index);
+void ggml_backend_register(ggml_backend_reg_t reg);
+size_t             ggml_backend_dev_count(void);
+ggml_backend_dev_t ggml_backend_dev_get(size_t index);
+ggml_backend_dev_t ggml_backend_dev_by_name(const char * name);
+#define RPC_PROTO_MAJOR_VERSION    7
+#define RPC_PROTO_MINOR_VERSION    0
+#define RPC_PROTO_PATCH_VERSION    0
+
+#define GGML_RPC_MAX_SERVERS       16
+
+ggml_backend_t ggml_backend_rpc_init(const char * endpoint, uint32_t device);
+bool ggml_backend_is_rpc(ggml_backend_t backend);
+ggml_backend_buffer_type_t ggml_backend_rpc_buffer_type(const char * endpoint, uint32_t device);
+void ggml_backend_rpc_get_device_memory(const char * endpoint, uint32_t device, size_t * free, size_t * total);
+void ggml_backend_rpc_start_server(const char * endpoint, const char * cache_dir,
+                                                    size_t n_threads, size_t n_devices, ggml_backend_dev_t * devices);
+ggml_backend_reg_t ggml_backend_rpc_reg(void);
+ggml_backend_reg_t ggml_backend_rpc_add_server(const char * endpoint);
 """
 
 ffi.cdef(_LLAMA_H_CDEF)
@@ -1441,6 +1474,46 @@ def _load_mtmd_library():
 
 _lib = None
 _mtmd_lib = None
+_ggml_libraries = {}
+
+
+def _get_ggml_library(name):
+    if name in _ggml_libraries:
+        return _ggml_libraries[name]
+    core_path = _find_library()
+    if core_path is None:
+        raise RuntimeError("Could not locate the llama.cpp library directory")
+    directory = Path(core_path).parent
+    system = platform.system().lower()
+    if system == "windows":
+        candidates = [directory / (name + ".dll"), directory / ("lib" + name + ".dll")]
+    elif system == "darwin":
+        candidates = [directory / ("lib" + name + ".dylib")]
+    else:
+        candidates = [directory / ("lib" + name + ".so")]
+        candidates.extend(sorted(directory.glob("lib" + name + ".so.*")))
+    path = next((path for path in candidates if path.is_file()), None)
+    if path is None:
+        raise RuntimeError("Missing bundled native library: " + name)
+    _configure_runtime_for_library(str(path))
+    library = ffi.dlopen(str(path))
+    _ggml_libraries[name] = library
+    return library
+
+
+def get_backend_lib():
+    """Load the backend registry library matching the selected llama library."""
+    return _get_ggml_library("ggml")
+
+
+def get_backend_base_lib():
+    """Load the backend device API matching the selected llama library."""
+    return _get_ggml_library("ggml-base")
+
+
+def get_rpc_lib():
+    """Load the RPC library matching the selected llama library."""
+    return _get_ggml_library("ggml-rpc")
 
 
 def get_lib():

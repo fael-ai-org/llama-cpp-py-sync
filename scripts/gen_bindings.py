@@ -46,6 +46,11 @@ def find_header_files(vendor_path: Path) -> dict:
     if ggml_opt_h.exists():
         headers["ggml-opt.h"] = ggml_opt_h
 
+    for name in ("ggml-backend.h", "ggml-rpc.h"):
+        path = vendor_path / "ggml" / "include" / name
+        if path.exists():
+            headers[name] = path
+
     mtmd_dir = vendor_path / "tools" / "mtmd"
     for name in ("mtmd.h", "mtmd-helper.h"):
         path = mtmd_dir / name
@@ -142,6 +147,7 @@ def preprocess_header(content: str) -> str:
     content = re.sub(r'LLAMA_API\s+', '', content)
     content = re.sub(r'MTMD_API\s+', '', content)
     content = re.sub(r'GGML_API\s+', '', content)
+    content = re.sub(r'GGML_BACKEND_API\s+', '', content)
     content = re.sub(r'__attribute__\s*\(\([^)]*\)\)', '', content)
     content = re.sub(r'__declspec\s*\([^)]*\)', '', content)
     content = re.sub(r'GGML_CALL\s*', '', content)
@@ -449,6 +455,8 @@ typedef struct llama_memory_i * llama_memory_t;
 struct ggml_tensor;
 typedef void * ggml_threadpool_t;
 typedef void * ggml_backend_dev_t;
+typedef void * ggml_backend_t;
+typedef void * ggml_backend_reg_t;
 typedef void * ggml_backend_buffer_type_t;
 enum ggml_log_level {
     GGML_LOG_LEVEL_NONE = 0,
@@ -623,6 +631,24 @@ typedef void * ggml_opt_epoch_callback;
         functions = extract_functions(content)
         if functions:
             cdef_parts.append("\n".join(functions))
+
+    backend_functions = {
+        "ggml_backend_dev_count", "ggml_backend_dev_get", "ggml_backend_dev_by_name",
+        "ggml_backend_dev_name", "ggml_backend_dev_description", "ggml_backend_dev_memory",
+        "ggml_backend_dev_type", "ggml_backend_reg_dev_count", "ggml_backend_reg_dev_get",
+        "ggml_backend_register",
+    }
+    for header_name in ("ggml-backend.h", "ggml-rpc.h"):
+        path = headers.get(header_name)
+        if path is None:
+            continue
+        content = preprocess_header(path.read_text(encoding="utf-8"))
+        if header_name == "ggml-backend.h":
+            cdef_parts.append(extract_enums_map(content)["ggml_backend_dev_type"])
+        for declaration in extract_functions(content):
+            match = re.search(r"\b(ggml_\w+)\s*\(", declaration)
+            if match and (match.group(1) in backend_functions or header_name == "ggml-rpc.h"):
+                cdef_parts.append(declaration)
 
     return "\n".join(cdef_parts)
 
@@ -820,6 +846,46 @@ def _load_mtmd_library():
 
 _lib = None
 _mtmd_lib = None
+_ggml_libraries = {{}}
+
+
+def _get_ggml_library(name):
+    if name in _ggml_libraries:
+        return _ggml_libraries[name]
+    core_path = _find_library()
+    if core_path is None:
+        raise RuntimeError("Could not locate the llama.cpp library directory")
+    directory = Path(core_path).parent
+    system = platform.system().lower()
+    if system == "windows":
+        candidates = [directory / (name + ".dll"), directory / ("lib" + name + ".dll")]
+    elif system == "darwin":
+        candidates = [directory / ("lib" + name + ".dylib")]
+    else:
+        candidates = [directory / ("lib" + name + ".so")]
+        candidates.extend(sorted(directory.glob("lib" + name + ".so.*")))
+    path = next((path for path in candidates if path.is_file()), None)
+    if path is None:
+        raise RuntimeError("Missing bundled native library: " + name)
+    _configure_runtime_for_library(str(path))
+    library = ffi.dlopen(str(path))
+    _ggml_libraries[name] = library
+    return library
+
+
+def get_backend_lib():
+    """Load the backend registry library matching the selected llama library."""
+    return _get_ggml_library("ggml")
+
+
+def get_backend_base_lib():
+    """Load the backend device API matching the selected llama library."""
+    return _get_ggml_library("ggml-base")
+
+
+def get_rpc_lib():
+    """Load the RPC library matching the selected llama library."""
+    return _get_ggml_library("ggml-rpc")
 
 
 def get_lib():

@@ -98,7 +98,7 @@ def _require_symbol(lib: ctypes.CDLL, name: str) -> None:
 
 _FORBIDDEN_NATIVE_NAME = re.compile(
     r"(?i)^(lib)?("
-    r"ggml[-_.]?rpc|"
+    r"ggml[-_.]?rpc[-_.]?server|"
     r"llama[-_.]?server|"
     r"llama[-_.]?rpc|"
     r"rpc[-_.]?server"
@@ -107,7 +107,7 @@ _FORBIDDEN_NATIVE_NAME = re.compile(
 
 
 def is_forbidden_native_artifact(name: str) -> bool:
-    """Return True when a packaged native file is an RPC or llama-server binary."""
+    """Return True when a packaged native file is a server executable."""
     return _FORBIDDEN_NATIVE_NAME.match(Path(name).name) is not None
 
 
@@ -123,12 +123,12 @@ def _packaged_native_names(package_dir: Path) -> list[str]:
     return [path.name for path in package_dir.iterdir() if path.is_file()]
 
 
-def _require_rpc_disabled(llama) -> None:
+def _require_rpc_enabled(llama) -> None:
     supports_rpc = getattr(llama, "llama_supports_rpc", None)
     if supports_rpc is None:
         raise RuntimeError("Missing required export: llama_supports_rpc")
-    if bool(supports_rpc()):
-        raise RuntimeError("llama_supports_rpc() is true; wheels must keep GGML_RPC=OFF")
+    if not bool(supports_rpc()):
+        raise RuntimeError("llama_supports_rpc() is false; wheels require GGML_RPC=ON")
 
 
 def _validate_penalties_sampler_cffi(project_root: Path) -> None:
@@ -142,11 +142,26 @@ def _validate_penalties_sampler_cffi(project_root: Path) -> None:
     if str(src_dir) not in sys.path:
         sys.path.insert(0, str(src_dir))
 
-    from llama_cpp_py_sync._cffi_bindings import get_ffi, get_lib
+    from llama_cpp_py_sync._cffi_bindings import (
+        get_backend_base_lib,
+        get_backend_lib,
+        get_ffi,
+        get_lib,
+        get_rpc_lib,
+    )
 
     ffi = get_ffi()
     llama = get_lib()
-    _require_rpc_disabled(llama)
+    _require_rpc_enabled(llama)
+    backend = get_backend_lib()
+    base = get_backend_base_lib()
+    rpc = get_rpc_lib()
+    for name in ("ggml_backend_dev_count", "ggml_backend_register"):
+        getattr(backend, name)
+    for name in ("ggml_backend_reg_dev_count", "ggml_backend_reg_dev_get"):
+        getattr(base, name)
+    for name in ("ggml_backend_rpc_add_server", "ggml_backend_rpc_start_server"):
+        getattr(rpc, name)
     sampler = llama.llama_sampler_init_penalties(128, 64, 1.1, 0.0, 0.0)
     try:
         if sampler == ffi.NULL:
@@ -178,7 +193,7 @@ def main() -> int:
     forbidden = forbidden_native_artifacts(_packaged_native_names(package_dir))
     if forbidden:
         raise RuntimeError(
-            "Packaged native artifacts include RPC or llama-server binaries: "
+            "Packaged native artifacts include server executables: "
             + ", ".join(forbidden)
         )
 

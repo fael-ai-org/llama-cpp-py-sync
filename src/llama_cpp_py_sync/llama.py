@@ -214,6 +214,7 @@ class Llama:
         split_mode: int | str | None = None,
         main_gpu: int | None = None,
         tensor_split: Sequence[float] | None = None,
+        rpc_servers: Sequence[str] | None = None,
     ):
         """
         Initialize the Llama model.
@@ -258,6 +259,8 @@ class Llama:
             main_gpu: Native GPU index for "none" mode. None keeps the default.
             tensor_split: Relative GPU proportions, e.g. [3, 1]. None keeps
                 native automatic placement. This does not connect remote nodes.
+            rpc_servers: Explicit native RPC host:port endpoints. Traffic is
+                unencrypted; use trusted endpoints or authenticated tunnels.
         """
         if not os.path.exists(model_path):
             raise FileNotFoundError(f"Model file not found: {model_path}")
@@ -289,6 +292,15 @@ class Llama:
 
         model_params = self._lib.llama_model_default_params()
         model_params.n_gpu_layers = n_gpu_layers
+        self._devices_buffer = None
+        if rpc_servers is not None:
+            from llama_cpp_py_sync.rpc import rpc_devices
+
+            devices = rpc_devices(rpc_servers)
+            self._devices_buffer = self._ffi.new(
+                "ggml_backend_dev_t[]", devices + [self._ffi.NULL]
+            )
+            model_params.devices = self._devices_buffer
         self._tensor_split_buffer = _configure_gpu_split(
             self._ffi, self._lib, model_params, split_mode, main_gpu, tensor_split
         )

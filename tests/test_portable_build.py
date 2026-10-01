@@ -24,7 +24,7 @@ def test_all_wheel_builds_disable_native_cpu_optimization(monkeypatch) -> None:
     assert args.count("-DGGML_NATIVE=OFF") == 1
 
 
-def test_wheel_builds_disable_server_curl_and_rpc(monkeypatch) -> None:
+def test_wheel_builds_enable_rpc_without_servers_curl_or_rdma(monkeypatch) -> None:
     monkeypatch.delenv("GITHUB_ACTIONS", raising=False)
     backends = {
         "cuda": (False, None),
@@ -38,7 +38,9 @@ def test_wheel_builds_disable_server_curl_and_rpc(monkeypatch) -> None:
 
     assert "-DLLAMA_BUILD_SERVER=OFF" in args
     assert "-DLLAMA_CURL=OFF" in args
-    assert "-DGGML_RPC=OFF" in args
+    assert "-DGGML_RPC=ON" in args
+    assert "-DGGML_RPC_RDMA=OFF" in args
+    assert "-DLLAMA_BUILD_TOOLS=OFF" in args
 
 
 def test_macos_dylibs_are_resigned_after_loader_path_changes(tmp_path, monkeypatch) -> None:

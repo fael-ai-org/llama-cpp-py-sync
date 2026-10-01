@@ -41,8 +41,10 @@ def _main() -> None:
             loader.exec_module(mod)
             llama = mod.get_lib()
             mod.get_mtmd_lib()
-            if llama.llama_supports_rpc():
-                raise SystemExit("smoke: llama_supports_rpc() is true")
+            if not llama.llama_supports_rpc():
+                raise SystemExit("smoke: llama_supports_rpc() is false")
+            mod.get_backend_lib()
+            mod.get_rpc_lib()
             print("smoke-ok")
             return
     raise SystemExit("smoke: llama_cpp_py_sync/_cffi_bindings.py not found under site-packages")

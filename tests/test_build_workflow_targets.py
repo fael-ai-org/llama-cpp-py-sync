@@ -51,7 +51,7 @@ def test_release_assets_exclude_ci_test_signing_files():
         "- name: Publish to PyPI", 1
     )[0]
     pattern = next(
-        line.strip().removeprefix("files: ")
+        line.strip()[len("files: "):]
         for line in release_section.splitlines()
         if line.strip().startswith("files: ")
     )

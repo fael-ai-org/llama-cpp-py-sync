@@ -7,6 +7,8 @@ like loading models, tokenizing text, and generating completions.
 
 from __future__ import annotations
 
+import math
+import operator
 import os
 import re
 from dataclasses import dataclass, field
@@ -46,6 +48,61 @@ POOLING_TYPES: dict[str, int] = {
     "last": 3,
     "rank": 4,
 }
+
+LLAMA_SPLIT_MODES: dict[str, int] = {
+    "none": 0,
+    "layer": 1,
+    "row": 2,
+    "tensor": 3,
+}
+
+
+def _configure_gpu_split(ffi, lib, model_params, split_mode, main_gpu, tensor_split):
+    """Validate native placement controls and retain their pointer storage."""
+    if split_mode is not None:
+        if isinstance(split_mode, str):
+            key = split_mode.strip().lower()
+            if key not in LLAMA_SPLIT_MODES:
+                raise ValueError("split_mode must be none, layer, row, or tensor")
+            mode = LLAMA_SPLIT_MODES[key]
+        else:
+            if isinstance(split_mode, bool):
+                raise ValueError("split_mode must be a split-mode name or integer")
+            mode = operator.index(split_mode)
+            if mode not in LLAMA_SPLIT_MODES.values():
+                raise ValueError("Unknown split_mode value")
+        model_params.split_mode = mode
+
+    max_devices = int(lib.llama_max_devices())
+    if main_gpu is not None:
+        if isinstance(main_gpu, bool):
+            raise ValueError("main_gpu must be a nonnegative integer")
+        gpu = operator.index(main_gpu)
+        if not 0 <= gpu < max_devices:
+            raise ValueError("main_gpu exceeds the native device-index capacity")
+        # This bounds the ABI index; it does not prove this GPU is installed.
+        model_params.main_gpu = gpu
+
+    if tensor_split is None:
+        return None
+    if isinstance(tensor_split, (str, bytes)):
+        raise ValueError("tensor_split must be a sequence of numeric proportions")
+    proportions = [float(value) for value in tensor_split]
+    if not 1 <= len(proportions) <= max_devices:
+        raise ValueError("tensor_split must contain 1 to llama_max_devices() proportions")
+    if any(not math.isfinite(value) or value < 0 for value in proportions):
+        raise ValueError("tensor_split proportions must be finite and nonnegative")
+    total = sum(proportions)
+    if not 0 < total <= 3.4028234663852886e38:
+        raise ValueError("tensor_split must have a positive, float32-safe total")
+    # Upstream reads llama_max_devices() floats, even for a shorter user list.
+    # Zero padding prevents out-of-bounds reads. Keep this allocation alive for
+    # the model lifetime rather than assigning a temporary CFFI pointer.
+    buffer = ffi.new("float[]", proportions + [0.0] * (max_devices - len(proportions)))
+    if not any(buffer):
+        raise ValueError("tensor_split proportions underflow the native float32 representation")
+    model_params.tensor_split = buffer
+    return buffer
 
 
 def _resolve_ggml_type(value: int | str) -> int:
@@ -154,6 +211,9 @@ class Llama:
         op_offload: bool | None = None,
         pooling_type: int | str | None = None,
         n_seq_max: int = 1,
+        split_mode: int | str | None = None,
+        main_gpu: int | None = None,
+        tensor_split: Sequence[float] | None = None,
     ):
         """
         Initialize the Llama model.
@@ -192,6 +252,12 @@ class Llama:
                 ``"none"``. ``None`` keeps the model/upstream default.
             n_seq_max: Maximum number of native sequences. Increase this for
                 true batched embedding requests.
+            split_mode: Native GPU placement: "none", "layer", "row", or
+                experimental "tensor", or the corresponding enum integer.
+                None preserves the native default. Backend/model support varies.
+            main_gpu: Native GPU index for "none" mode. None keeps the default.
+            tensor_split: Relative GPU proportions, e.g. [3, 1]. None keeps
+                native automatic placement. This does not connect remote nodes.
         """
         if not os.path.exists(model_path):
             raise FileNotFoundError(f"Model file not found: {model_path}")
@@ -223,6 +289,9 @@ class Llama:
 
         model_params = self._lib.llama_model_default_params()
         model_params.n_gpu_layers = n_gpu_layers
+        self._tensor_split_buffer = _configure_gpu_split(
+            self._ffi, self._lib, model_params, split_mode, main_gpu, tensor_split
+        )
         # llama.cpp folded use_mmap / use_mlock / use_direct_io into a single
         # llama_load_mode enum. An explicit load_mode wins; otherwise the legacy
         # booleans are translated, with mlock implying mmap as upstream defines.

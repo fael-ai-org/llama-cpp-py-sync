@@ -30,7 +30,8 @@ def test_macos_arm64_vulkan_wheel_is_built_and_released() -> None:
     workflow = WORKFLOW.read_text(encoding="utf-8")
 
     assert "build-macos-arm64-vulkan:" in workflow
-    assert "runs-on: macos-14" in workflow
+    assert "runs-on: macos-15" in workflow
+    assert 'MACOSX_DEPLOYMENT_TARGET: "14.0"' in workflow
     assert "uses: jakoch/install-vulkan-sdk-action@v1" in workflow
     assert "vulkan_version: '1.4.335.0'" in workflow
     assert "brew install cmake ninja" in workflow

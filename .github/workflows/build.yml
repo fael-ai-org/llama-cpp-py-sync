@@ -621,7 +621,9 @@ jobs:
   build-macos-arm64:
     needs: [check-upstream, validate-bindings]
     if: needs.check-upstream.outputs.should_build == 'true' && (needs.check-upstream.outputs.build_target == 'all' || needs.check-upstream.outputs.build_target == 'macos-arm64-metal')
-    runs-on: macos-14
+    runs-on: macos-15
+    env:
+      MACOSX_DEPLOYMENT_TARGET: "14.0"
     permissions:
       contents: read
       id-token: write
@@ -704,7 +706,9 @@ jobs:
   build-macos-arm64-vulkan:
     needs: [check-upstream, validate-bindings]
     if: needs.check-upstream.outputs.should_build == 'true' && (needs.check-upstream.outputs.build_target == 'all' || needs.check-upstream.outputs.build_target == 'macos-arm64-vulkan')
-    runs-on: macos-14
+    runs-on: macos-15
+    env:
+      MACOSX_DEPLOYMENT_TARGET: "14.0"
     permissions:
       contents: read
       id-token: write

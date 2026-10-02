@@ -147,7 +147,7 @@ def tls_workers(tmp_path):
                 try:
                     denied.sendall(b"unauthorized")
                     assert denied.recv(1) == b""
-                except ssl.SSLError:
+                except (ssl.SSLError, ConnectionResetError):
                     pass
         context.load_cert_chain(str(certificate), str(key))
         secured = context.wrap_socket(socket.create_connection(("127.0.0.1", port)), server_hostname="localhost")

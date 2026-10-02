@@ -1,0 +1,248 @@
+diff --git a/ggml/include/ggml-rpc.h b/ggml/include/ggml-rpc.h
+index 1f8cb79..3fc0cfa 100644
+--- a/ggml/include/ggml-rpc.h
++++ b/ggml/include/ggml-rpc.h
+@@ -16,6 +16,22 @@ static_assert(GGML_OP_COUNT == 101, "GGML_OP_COUNT has changed - update RPC_PROT
+ 
+ #define GGML_RPC_MAX_SERVERS       16
+ 
++// Callbacks transfer exactly size bytes or return false. The caller supplies
++// an authorized stream and keeps its context alive until native use ends.
++// No sockets or transport upgrades are opened for caller-owned streams.
++typedef struct ggml_rpc_stream {
++    void * user_data;
++    bool (*send)(void * user_data, const void * data, size_t size);
++    bool (*recv)(void * user_data, void * data, size_t size);
++    void (*close)(void * user_data);
++} ggml_rpc_stream;
++
++GGML_BACKEND_API ggml_backend_reg_t ggml_backend_rpc_add_stream(const char * name, const ggml_rpc_stream * stream);
++// Release only after all models, buffers and backend users have stopped.
++GGML_BACKEND_API bool ggml_backend_rpc_remove_stream(const char * name);
++GGML_BACKEND_API bool ggml_backend_rpc_serve_stream(const ggml_rpc_stream * stream,
++    const char * cache_dir, size_t n_threads, size_t n_devices, ggml_backend_dev_t * devices);
++
+ // backend API
+ GGML_BACKEND_API ggml_backend_t ggml_backend_rpc_init(const char * endpoint, uint32_t device);
+ GGML_BACKEND_API bool ggml_backend_is_rpc(ggml_backend_t backend);
+diff --git a/ggml/src/ggml-rpc/ggml-rpc.cpp b/ggml/src/ggml-rpc/ggml-rpc.cpp
+index 353b79b..6125436 100644
+--- a/ggml/src/ggml-rpc/ggml-rpc.cpp
++++ b/ggml/src/ggml-rpc/ggml-rpc.cpp
+@@ -419,7 +419,7 @@ public:
+     void event_record(ggml_backend_event_t event);
+     void synchronize();
+ 
+-    void start(const std::string & endpoint);
++    void start(const std::string & endpoint, socket_ptr stream = nullptr);
+     void work();
+ 
+     ~rpc_dispatcher();
+@@ -532,7 +532,10 @@ void rpc_dispatcher::synchronize() {
+     msg->completion.get_future().wait();
+ }
+ 
+-void rpc_dispatcher::start(const std::string & endpoint) {
++void rpc_dispatcher::start(const std::string & endpoint, socket_ptr stream) {
++    if (stream) {
++        sock = std::move(stream);
++    } else {
+     std::string host;
+     int port;
+     if (!parse_endpoint(endpoint, host, port)) {
+@@ -546,6 +549,7 @@ void rpc_dispatcher::start(const std::string & endpoint) {
+     if (sock == nullptr) {
+         GGML_ABORT("Failed to connect to %s\n", endpoint.c_str());
+     }
++    }
+     if (!negotiate_hello(sock)) {
+         GGML_ABORT("RPC handshake failed for %s\n", endpoint.c_str());
+     }
+@@ -576,13 +580,23 @@ void rpc_dispatcher::work() {
+ rpc_dispatcher::~rpc_dispatcher() {
+     running = false;
+     queue.interrupt();
+-    sock = nullptr;
+     if (thread.joinable()) {
+         thread.join();
+     }
++    sock = nullptr;
+ }
+ 
++static std::mutex stream_mutex;
++static std::unordered_map<std::string, std::shared_ptr<rpc_dispatcher>> stream_dispatchers;
++static std::unordered_set<std::string> stream_names;
++
+ static std::shared_ptr<rpc_dispatcher> get_dispatcher(const std::string & endpoint) {
++    if (endpoint.compare(0, 7, "stream:") == 0) {
++        std::lock_guard<std::mutex> lock(stream_mutex);
++        auto it = stream_dispatchers.find(endpoint);
++        if (it == stream_dispatchers.end()) GGML_ABORT("RPC stream is unavailable\n");
++        return it->second;
++    }
+     static std::mutex mutex;
+     std::lock_guard<std::mutex> lock(mutex);
+     static std::unordered_map<std::string, std::weak_ptr<rpc_dispatcher>> dispatchers;
+@@ -2158,6 +2172,26 @@ void ggml_backend_rpc_start_server(const char * endpoint, const char * cache_dir
+     }
+ }
+ 
++bool ggml_backend_rpc_serve_stream(const ggml_rpc_stream * stream, const char * cache_dir,
++                                  size_t n_threads, size_t n_devices, ggml_backend_dev_t * devices) {
++    auto sock = socket_t::from_stream(stream);
++    if (!sock || !devices || !n_devices || !n_threads) return false;
++    std::vector<ggml_backend_t> backends;
++    bool initialized = true;
++    for (size_t i = 0; i < n_devices; ++i) {
++        auto dev = devices[i];
++        auto backend = dev ? ggml_backend_dev_init(dev, nullptr) : nullptr;
++        if (!backend) { initialized = false; break; }
++        backends.push_back(backend);
++        auto reg = ggml_backend_dev_backend_reg(dev);
++        auto set_threads = (ggml_backend_set_n_threads_t) ggml_backend_reg_get_proc_address(reg, "ggml_backend_set_n_threads");
++        if (set_threads) set_threads(backend, n_threads);
++    }
++    if (initialized) rpc_serve_client(backends, cache_dir, sock);
++    for (auto backend : backends) ggml_backend_free(backend);
++    return initialized;
++}
++
+ static const char * ggml_backend_rpc_device_get_name(ggml_backend_dev_t dev) {
+     ggml_backend_rpc_device_context * ctx = (ggml_backend_rpc_device_context *)dev->context;
+ 
+@@ -2379,3 +2413,38 @@ ggml_backend_reg_t ggml_backend_rpc_add_server(const char * endpoint) {
+ 
+ 
+ GGML_BACKEND_DL_IMPL(ggml_backend_rpc_reg)
++
++ggml_backend_reg_t ggml_backend_rpc_add_stream(const char * name, const ggml_rpc_stream * stream) {
++    if (!name || !*name || std::strlen(name) > 128) return nullptr;
++    auto sock = socket_t::from_stream(stream);
++    if (!sock) return nullptr;
++    std::string endpoint = "stream:" + std::string(name);
++    {
++        std::lock_guard<std::mutex> lock(stream_mutex);
++        if (!stream_names.insert(endpoint).second) return nullptr;
++    }
++    auto dispatcher = std::make_shared<rpc_dispatcher>();
++    dispatcher->start(endpoint, sock);
++    {
++        std::lock_guard<std::mutex> lock(stream_mutex);
++        stream_dispatchers.emplace(endpoint, dispatcher);
++    }
++    auto registration = ggml_backend_rpc_add_server(endpoint.c_str());
++    if (!registration) ggml_backend_rpc_remove_stream(name);
++    return registration;
++}
++
++bool ggml_backend_rpc_remove_stream(const char * name) {
++    if (!name) return false;
++    std::shared_ptr<rpc_dispatcher> dispatcher;
++    {
++        std::lock_guard<std::mutex> lock(stream_mutex);
++        auto it = stream_dispatchers.find("stream:" + std::string(name));
++        if (it == stream_dispatchers.end()) return true;
++        if (it->second.use_count() != 1) return false;
++        dispatcher = std::move(it->second);
++        stream_dispatchers.erase(it);
++    }
++    // Destruction and callbacks must not run while holding the registry lock.
++    return true;
++}
+diff --git a/ggml/src/ggml-rpc/transport.cpp b/ggml/src/ggml-rpc/transport.cpp
+index b28d166..23b3c86 100644
+--- a/ggml/src/ggml-rpc/transport.cpp
++++ b/ggml/src/ggml-rpc/transport.cpp
+@@ -1,4 +1,5 @@
+ #include "transport.h"
++#include "ggml-rpc.h"
+ #include "ggml-impl.h"
+ 
+ #ifdef _WIN32
+@@ -131,6 +132,7 @@ static_assert(sizeof(rdma_caps) == RPC_CONN_CAPS_SIZE, "rdma_caps must match con
+ 
+ struct socket_t::impl {
+     impl(sockfd_t fd) : use_rdma(false), fd(fd) {}
++    impl(const ggml_rpc_stream & callbacks) : use_rdma(false), fd((sockfd_t)-1), callbacks(callbacks) {}
+     ~impl();
+     bool send_data(const void * data, size_t size);
+     bool recv_data(void * data, size_t size);
+@@ -158,9 +160,14 @@ struct socket_t::impl {
+ #endif // GGML_RPC_RDMA
+     bool     use_rdma;
+     sockfd_t fd;
++    std::optional<ggml_rpc_stream> callbacks;
+ };
+ 
+ socket_t::impl::~impl() {
++    if (callbacks) {
++        if (callbacks->close) callbacks->close(callbacks->user_data);
++        return;
++    }
+ #ifdef GGML_RPC_RDMA
+     rdma.reset();
+ #endif // GGML_RPC_RDMA
+@@ -537,6 +544,7 @@ bool socket_t::impl::rdma_recv(void * data, size_t size) {
+ #endif // GGML_RPC_RDMA
+ 
+ bool socket_t::impl::send_data(const void * data, size_t size) {
++    if (callbacks) return callbacks->send(callbacks->user_data, data, size);
+ #ifdef GGML_RPC_RDMA_APPLE
+     if (use_rdma) {
+         return rdma->send(data, size);
+@@ -561,6 +569,7 @@ bool socket_t::impl::send_data(const void * data, size_t size) {
+ }
+ 
+ bool socket_t::impl::recv_data(void * data, size_t size) {
++    if (callbacks) return callbacks->recv(callbacks->user_data, data, size);
+ #ifdef GGML_RPC_RDMA_APPLE
+     if (use_rdma) {
+         return rdma->recv(data, size);
+@@ -590,6 +599,7 @@ bool socket_t::impl::recv_data(void * data, size_t size) {
+ 
+ void socket_t::impl::get_caps(uint8_t * local_caps) {
+     memset(local_caps, 0, RPC_CONN_CAPS_SIZE);
++    if (callbacks) return;
+ #ifdef GGML_RPC_RDMA
+     if (std::getenv("GGML_RPC_NO_RDMA")) {
+         return;
+@@ -615,6 +625,7 @@ void socket_t::impl::get_caps(uint8_t * local_caps) {
+ }
+ 
+ void socket_t::impl::update_caps(const uint8_t * remote_caps) {
++    if (callbacks) return;
+ #ifdef GGML_RPC_RDMA
+     // a peer that has no RDMA advertises all-zero caps and takes no further part
+     // in the negotiation, so drop to TCP without reporting a failure
+@@ -659,6 +670,11 @@ socket_t::socket_t(std::unique_ptr<impl> p) : pimpl(std::move(p)) {}
+ 
+ socket_t::~socket_t() = default;
+ 
++socket_ptr socket_t::from_stream(const ggml_rpc_stream * stream) {
++    if (!stream || !stream->send || !stream->recv) return nullptr;
++    return socket_ptr(new socket_t(std::make_unique<impl>(*stream)));
++}
++
+ bool socket_t::send_data(const void * data, size_t size) {
+     return pimpl->send_data(data, size);
+ }
+diff --git a/ggml/src/ggml-rpc/transport.h b/ggml/src/ggml-rpc/transport.h
+index 3f747ec..5c8ca53 100644
+--- a/ggml/src/ggml-rpc/transport.h
++++ b/ggml/src/ggml-rpc/transport.h
+@@ -5,6 +5,7 @@
+ #include <memory>
+ 
+ struct socket_t;
++struct ggml_rpc_stream;
+ typedef std::shared_ptr<socket_t> socket_ptr;
+ 
+ static constexpr size_t MAX_CHUNK_SIZE = 1024ull * 1024ull * 1024ull; // 1 GiB
+@@ -27,6 +28,7 @@ struct socket_t {
+ 
+     static socket_ptr create_server(const char * host, int port);
+     static socket_ptr connect(const char * host, int port);
++    static socket_ptr from_stream(const ggml_rpc_stream * stream);
+ 
+ private:
+     struct impl;

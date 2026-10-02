@@ -160,7 +160,9 @@ def _validate_penalties_sampler_cffi(project_root: Path) -> None:
         getattr(backend, name)
     for name in ("ggml_backend_reg_dev_count", "ggml_backend_reg_dev_get"):
         getattr(base, name)
-    for name in ("ggml_backend_rpc_add_server", "ggml_backend_rpc_start_server"):
+    for name in ("ggml_backend_rpc_add_server", "ggml_backend_rpc_start_server",
+                 "ggml_backend_rpc_add_stream", "ggml_backend_rpc_serve_stream",
+                 "ggml_backend_rpc_remove_stream"):
         getattr(rpc, name)
     sampler = llama.llama_sampler_init_penalties(128, 64, 1.1, 0.0, 0.0)
     try:

@@ -42,5 +42,11 @@
       "name": "miniaudio",
       "license": "Public Domain or MIT-0"
     }
+  ],
+  "native_patches": [
+    {
+      "name": "rpc-stream",
+      "sha256": "5b91cb9a4af53c690c0cc6024d910b14d16e02257d63d123ff77589132df03b1"
+    }
   ]
 }

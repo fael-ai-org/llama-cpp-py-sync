@@ -215,6 +215,7 @@ class Llama:
         main_gpu: int | None = None,
         tensor_split: Sequence[float] | None = None,
         rpc_servers: Sequence[str] | None = None,
+        rpc_streams: Sequence | None = None,
     ):
         """
         Initialize the Llama model.
@@ -261,6 +262,9 @@ class Llama:
                 native automatic placement. This does not connect remote nodes.
             rpc_servers: Explicit native RPC host:port endpoints. Traffic is
                 unencrypted; use trusted endpoints or authenticated tunnels.
+            rpc_streams: Caller-owned RPCStream connections. The caller owns
+                authentication, encryption and closure after model shutdown.
+                Cannot be combined with rpc_servers.
         """
         if not os.path.exists(model_path):
             raise FileNotFoundError(f"Model file not found: {model_path}")
@@ -293,10 +297,12 @@ class Llama:
         model_params = self._lib.llama_model_default_params()
         model_params.n_gpu_layers = n_gpu_layers
         self._devices_buffer = None
-        if rpc_servers is not None:
-            from llama_cpp_py_sync.rpc import rpc_devices
+        if rpc_servers is not None and rpc_streams is not None:
+            raise ValueError("Select rpc_servers or rpc_streams, not both")
+        if rpc_servers is not None or rpc_streams is not None:
+            from llama_cpp_py_sync.rpc import rpc_devices, rpc_stream_devices
 
-            devices = rpc_devices(rpc_servers)
+            devices = rpc_devices(rpc_servers) if rpc_streams is None else rpc_stream_devices(rpc_streams)
             self._devices_buffer = self._ffi.new(
                 "ggml_backend_dev_t[]", devices + [self._ffi.NULL]
             )

@@ -1445,6 +1445,7 @@ def build_llama_cpp(
             print(f"Error: Vendor directory not found: {vendor_path}", file=sys.stderr)
             return None
 
+    subprocess.run([sys.executable, str(Path(__file__).with_name("apply_native_patches.py")), str(vendor_path)], check=True)
     build_dir = vendor_path / "build"
 
     if clean and build_dir.exists():
@@ -1474,6 +1475,9 @@ def build_llama_cpp(
         return None
 
     print("\nBuilding...")
+    if not run_cmake_build(build_dir, parallel=parallel, target="ggml-rpc"):
+        print("Error: RPC build failed", file=sys.stderr)
+        return None
     if not run_cmake_build(build_dir, parallel=parallel, target="mtmd"):
         print("Error: Build failed", file=sys.stderr)
         return None

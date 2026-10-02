@@ -1319,9 +1319,17 @@ ggml_backend_dev_t ggml_backend_dev_by_name(const char * name);
 #define RPC_PROTO_MAJOR_VERSION    7
 #define RPC_PROTO_MINOR_VERSION    0
 #define RPC_PROTO_PATCH_VERSION    0
-
 #define GGML_RPC_MAX_SERVERS       16
-
+typedef struct ggml_rpc_stream {
+    void * user_data;
+    bool (*send)(void * user_data, const void * data, size_t size);
+    bool (*recv)(void * user_data, void * data, size_t size);
+    void (*close)(void * user_data);
+} ggml_rpc_stream;
+ggml_backend_reg_t ggml_backend_rpc_add_stream(const char * name, const ggml_rpc_stream * stream);
+bool ggml_backend_rpc_remove_stream(const char * name);
+bool ggml_backend_rpc_serve_stream(const ggml_rpc_stream * stream,
+    const char * cache_dir, size_t n_threads, size_t n_devices, ggml_backend_dev_t * devices);
 ggml_backend_t ggml_backend_rpc_init(const char * endpoint, uint32_t device);
 bool ggml_backend_is_rpc(ggml_backend_t backend);
 ggml_backend_buffer_type_t ggml_backend_rpc_buffer_type(const char * endpoint, uint32_t device);

@@ -443,8 +443,40 @@ and uploads the regenerated files as an artifact. `Build Wheels` requires the
 same pair before any platform build.
 
 Wheel CMake keeps `-DLLAMA_BUILD_SERVER=OFF`, `-DLLAMA_CURL=OFF`, and
-`-DGGML_RPC=OFF`. After each native build, `validate_llama_exports.py` fails
-if a server/RPC binary was packaged or `llama_supports_rpc()` is true.
+`-DGGML_RPC=ON`, with RDMA disabled. After each native build,
+`validate_llama_exports.py` requires RPC support and rejects packaged server
+executables.
+
+### Caller-owned RPC streams
+
+`patches/rpc-stream.patch` is a small native extension, not an upstream API.
+Build and binding generation apply it idempotently and reject incompatible
+upstream sources. It adds `ggml_backend_rpc_add_stream`,
+`ggml_backend_rpc_serve_stream` and `ggml_backend_rpc_remove_stream` through
+the existing transport abstraction; RPC messages and inference stay unchanged.
+Caller streams advertise no RDMA capabilities and never open a native listener.
+The original TCP APIs remain available and remain unauthenticated/unencrypted.
+
+`RPCStream` accepts a blocking transport with `sendall`, `recv_into` and `close`,
+including an already authenticated TLS socket. Establish and verify transport
+security before passing it to native code; the binding does not authenticate
+peers or configure TLS. A worker calls `RPCStream(connection).serve(devices=["CPU"])`.
+On the coordinator, pass stream owners as `Llama(..., rpc_streams=[first, second])`;
+`rpc_streams` and `rpc_servers` cannot be combined. Existing split options apply.
+
+Keep stream owners alive until models and backends have stopped, then close
+them. Closing with live native consumers is refused. Registered streams use
+explicit model device handles instead of the process-wide device registry,
+which has no unregister API. Low-level callers must likewise avoid globally
+registering stream devices. Native RPC failures can abort the process; use
+dedicated supervised workers and model processes. This interface does not
+replace application authorization, resource admission or native RPC hardening.
+
+For local acceptance, set `LLAMA_TEST_RPC_STREAM=1`, optionally provide
+`LLAMA_TEST_MODEL`, and run `python -m pytest tests/test_rpc_stream.py`.
+OpenSSL creates temporary test certificates. The tests exercise mutual TLS,
+unauthenticated-peer rejection, disconnect cleanup and optional two-worker
+generation. Physical mixed-platform acceptance remains separate.
 
 Local run (after syncing upstream headers):
 

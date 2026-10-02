@@ -645,6 +645,11 @@ typedef void * ggml_opt_epoch_callback;
         content = preprocess_header(path.read_text(encoding="utf-8"))
         if header_name == "ggml-backend.h":
             cdef_parts.append(extract_enums_map(content)["ggml_backend_dev_type"])
+        if header_name == "ggml-rpc.h":
+            cdef_parts.extend(re.findall(
+                r"^#define\s+(?:RPC_PROTO_\w+|GGML_RPC_MAX_SERVERS)\s+\d+[^\S\n]*$",
+                path.read_text(encoding="utf-8"), re.MULTILINE))
+            cdef_parts.extend(extract_structs(content))
         for declaration in extract_functions(content):
             match = re.search(r"\b(ggml_\w+)\s*\(", declaration)
             if match and (match.group(1) in backend_functions or header_name == "ggml-rpc.h"):
@@ -974,6 +979,10 @@ def get_ffi():
             {"name": "miniaudio", "license": "Public Domain or MIT-0"},
         ],
     }
+    patch_path = project_root / "patches" / "rpc-stream.patch"
+    if patch_path.exists():
+        import hashlib
+        manifest["native_patches"] = [{"name": "rpc-stream", "sha256": hashlib.sha256(patch_path.read_bytes()).hexdigest()}]
     manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
 
     print(f"Generated bindings at: {output_path}")
@@ -1019,6 +1028,10 @@ def main():
     project_root = args.project_root or get_project_root()
     vendor_path = args.vendor_path or (project_root / "vendor" / "llama.cpp")
     output_path = args.output or (project_root / "src" / "llama_cpp_py_sync" / "_cffi_bindings.py")
+
+    import subprocess
+    import sys
+    subprocess.run([sys.executable, str(Path(__file__).with_name("apply_native_patches.py")), str(vendor_path)], check=True)
 
     generate_bindings_file(
         project_root=project_root,

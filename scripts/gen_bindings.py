@@ -12,7 +12,7 @@ import json
 import re
 from datetime import datetime
 from pathlib import Path
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 
 def get_project_root() -> Path:
@@ -216,7 +216,7 @@ def extract_enums(content: str) -> List[str]:
     return enums
 
 
-def extract_enums_map(content: str) -> dict[str, str]:
+def extract_enums_map(content: str) -> Dict[str, str]:
     """Extract enum definitions keyed by enum name."""
     out: dict[str, str] = {}
     for enum_def in extract_enums(content):
@@ -226,7 +226,7 @@ def extract_enums_map(content: str) -> dict[str, str]:
     return out
 
 
-def extract_named_struct_decls_map(content: str) -> dict[str, str]:
+def extract_named_struct_decls_map(content: str) -> Dict[str, str]:
     """Extract `struct name { ... };` declarations keyed by name."""
     out: dict[str, str] = {}
     for struct_def in extract_named_struct_decls(content):

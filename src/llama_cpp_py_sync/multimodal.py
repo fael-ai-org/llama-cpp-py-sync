@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Iterable, Iterator, Mapping, Sequence
 
-from llama_cpp_py_sync._cffi_bindings import get_ffi, get_mtmd_lib
+from llama_cpp_py_sync._cffi_bindings import get_backend_lib, get_ffi, get_mtmd_lib
 
 
 class MultimodalError(RuntimeError):
@@ -366,6 +366,7 @@ class MultimodalContext:
         *,
         discover_projector: bool = True,
         use_gpu: bool = True,
+        device: str | None = None,
         n_threads: int | None = None,
         flash_attn_type: int | None = None,
         warmup: bool = True,
@@ -383,6 +384,11 @@ class MultimodalContext:
         self._ctx = self._ffi.NULL
         self.limits = limits or MultimodalLimits()
         self.use_gpu = bool(use_gpu)
+        if device is not None and (not isinstance(device, str) or not device or "\0" in device):
+            raise ValueError("device must be a nonempty native device name")
+        if device is not None and not self.use_gpu:
+            raise ValueError("Explicit device selection requires use_gpu=True")
+        self.device = device
         self.projector_path = self._resolve_projector_path(model, projector_path, discover_projector)
         self._progress_callback = None
         self._closed = False
@@ -396,6 +402,10 @@ class MultimodalContext:
 
         params = self._lib.mtmd_context_params_default()
         params.use_gpu = self.use_gpu
+        if device is not None:
+            params.device = get_backend_lib().ggml_backend_dev_by_name(device.encode("utf-8"))
+            if params.device == self._ffi.NULL:
+                raise ValueError("Unknown native projector device")
         params.print_timings = False
         if n_threads is not None:
             if n_threads <= 0:
@@ -504,7 +514,7 @@ class MultimodalContext:
             "audio_generation": supports_generation,
             "audio_sample_rate": int(gen_info.sample_rate) if supports_generation else self.audio_sample_rate,
             "audio_model_variant": None if gen_info.model_variant == self._ffi.NULL else self._ffi.string(gen_info.model_variant).decode("utf-8", "replace"),
-            "projector_offload": {"use_gpu": self.use_gpu},
+            "projector_offload": {"use_gpu": self.use_gpu, "requested_device": self.device},
             "embedding_capabilities": self.model._embedding_capabilities()
             if hasattr(self.model, "_embedding_capabilities")
             else {},

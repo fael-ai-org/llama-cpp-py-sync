@@ -620,6 +620,7 @@ class Llama:
         *,
         discover_projector: bool = True,
         projector_use_gpu: bool = True,
+        projector_device: str | None = None,
     ) -> dict[str, Any]:
         """Inspect GGUF and native llama.cpp/mtmd capabilities.
 
@@ -650,6 +651,7 @@ class Llama:
                 projector_path,
                 discover_projector=discover_projector,
                 use_gpu=projector_use_gpu,
+                device=projector_device,
                 warmup=False,
             )
             result.update(context.capabilities)
@@ -666,6 +668,7 @@ class Llama:
         *,
         discover_projector: bool,
         use_gpu: bool,
+        device: str | None = None,
         n_threads: int | None = None,
         flash_attn_type: int | None = None,
         warmup: bool = True,
@@ -678,6 +681,7 @@ class Llama:
             requested_path,
             bool(discover_projector),
             bool(use_gpu),
+            device,
             n_threads,
             flash_attn_type,
         )
@@ -693,6 +697,7 @@ class Llama:
             projector_path,
             discover_projector=discover_projector,
             use_gpu=use_gpu,
+            device=device,
             n_threads=n_threads,
             flash_attn_type=flash_attn_type,
             warmup=warmup,
@@ -1312,6 +1317,7 @@ class Llama:
         seed: int | None = None,
         cancel_callback: Callable[[], bool] | None = None,
         projector_use_gpu: bool = True,
+        projector_device: str | None = None,
         structured: bool = False,
     ) -> str | TranscriptionResult:
         """Transcribe audio and remove native ASR wrapper tokens from the text."""
@@ -1329,6 +1335,7 @@ class Llama:
             seed=seed,
             cancel_callback=cancel_callback,
             projector_use_gpu=projector_use_gpu,
+            projector_device=projector_device,
         ):
             result = current
         if result is None:
@@ -1350,6 +1357,7 @@ class Llama:
         seed: int | None = None,
         cancel_callback: Callable[[], bool] | None = None,
         projector_use_gpu: bool = True,
+        projector_device: str | None = None,
     ) -> Iterator[TranscriptionResult]:
         """Yield partial structured transcription results as text is decoded."""
         from llama_cpp_py_sync.multimodal import (
@@ -1376,6 +1384,7 @@ class Llama:
                 projector_path,
                 discover_projector=discover_projector,
                 use_gpu=projector_use_gpu,
+                device=projector_device,
                 warmup=True,
             )
             if not context.supports_audio:
@@ -1437,6 +1446,7 @@ class Llama:
         output_format: str = "wav",
         cancel_callback: Callable[[], bool] | None = None,
         projector_use_gpu: bool = True,
+        projector_device: str | None = None,
     ) -> GeneratedAudio:
         """Generate audio through upstream mtmd's in-process TTS helper."""
         from llama_cpp_py_sync.multimodal import (
@@ -1464,6 +1474,7 @@ class Llama:
                 projector_path,
                 discover_projector=discover_projector,
                 use_gpu=projector_use_gpu,
+                device=projector_device,
             )
             info = context._lib.mtmd_gen_audio_get_info(context._ctx)
             if int(info.type) == 0:

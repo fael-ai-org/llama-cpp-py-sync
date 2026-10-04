@@ -668,7 +668,7 @@ class Llama:
         *,
         discover_projector: bool,
         use_gpu: bool,
-        device: str | None = None,
+        device: Any = None,
         n_threads: int | None = None,
         flash_attn_type: int | None = None,
         warmup: bool = True,

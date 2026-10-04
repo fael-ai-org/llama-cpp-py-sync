@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Iterable, Iterator, Mapping, Sequence
 
-from llama_cpp_py_sync._cffi_bindings import get_backend_lib, get_ffi, get_mtmd_lib
+from llama_cpp_py_sync._cffi_bindings import get_backend_base_lib, get_backend_lib, get_ffi, get_mtmd_lib
 
 
 class MultimodalError(RuntimeError):
@@ -366,7 +366,7 @@ class MultimodalContext:
         *,
         discover_projector: bool = True,
         use_gpu: bool = True,
-        device: str | None = None,
+        device: Any = None,
         n_threads: int | None = None,
         flash_attn_type: int | None = None,
         warmup: bool = True,
@@ -384,11 +384,28 @@ class MultimodalContext:
         self._ctx = self._ffi.NULL
         self.limits = limits or MultimodalLimits()
         self.use_gpu = bool(use_gpu)
-        if device is not None and (not isinstance(device, str) or not device or "\0" in device):
-            raise ValueError("device must be a nonempty native device name")
+        device_handle = self._ffi.NULL
+        if isinstance(device, str):
+            if not device or "\0" in device:
+                raise ValueError("device must be a nonempty native device name")
+            device_handle = get_backend_lib().ggml_backend_dev_by_name(device.encode("utf-8"))
+            if device_handle == self._ffi.NULL:
+                raise ValueError("Unknown native projector device")
+        elif device is not None:
+            try:
+                valid = self._ffi.typeof(device) == self._ffi.typeof("ggml_backend_dev_t")
+            except TypeError:
+                valid = False
+            if not valid or device == self._ffi.NULL:
+                raise ValueError("device must be a native device name or non-null ggml_backend_dev_t")
+            device_handle = device
         if device is not None and not self.use_gpu:
             raise ValueError("Explicit device selection requires use_gpu=True")
-        self.device = device
+        # A supplied handle remains caller-owned for the context's lifetime.
+        # It need not be registered in the global device-name inventory.
+        self._device_handle = device_handle
+        self.device = (device if isinstance(device, str) or device is None else
+            self._ffi.string(get_backend_base_lib().ggml_backend_dev_name(device_handle)).decode("utf-8", "strict"))
         self.projector_path = self._resolve_projector_path(model, projector_path, discover_projector)
         self._progress_callback = None
         self._closed = False
@@ -403,9 +420,7 @@ class MultimodalContext:
         params = self._lib.mtmd_context_params_default()
         params.use_gpu = self.use_gpu
         if device is not None:
-            params.device = get_backend_lib().ggml_backend_dev_by_name(device.encode("utf-8"))
-            if params.device == self._ffi.NULL:
-                raise ValueError("Unknown native projector device")
+            params.device = device_handle
         params.print_timings = False
         if n_threads is not None:
             if n_threads <= 0:

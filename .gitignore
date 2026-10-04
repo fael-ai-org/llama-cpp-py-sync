@@ -120,3 +120,5 @@ signing-material/
 *.p12
 *.key
 *.private.pem
+
+/AGENTS.md

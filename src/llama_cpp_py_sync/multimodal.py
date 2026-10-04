@@ -16,7 +16,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Iterable, Iterator, Mapping, Sequence
 
-from llama_cpp_py_sync._cffi_bindings import get_backend_base_lib, get_backend_lib, get_ffi, get_mtmd_lib
+from llama_cpp_py_sync._cffi_bindings import (
+    get_backend_base_lib,
+    get_backend_lib,
+    get_ffi,
+    get_mtmd_lib,
+)
 
 
 class MultimodalError(RuntimeError):

@@ -464,6 +464,15 @@ peers or configure TLS. A worker calls `RPCStream(connection).serve(devices=["CP
 On the coordinator, pass stream owners as `Llama(..., rpc_streams=[first, second])`;
 `rpc_streams` and `rpc_servers` cannot be combined. Existing split options apply.
 
+Workers can opt into native tensor caching with
+`RPCStream(connection).serve(devices=["CPU"], cache_dir="existing-cache-directory")`.
+The directory must already exist; strings and path-like objects are accepted.
+Caching is disabled by default. The caller owns disk limits, isolation and cache
+removal. Native caching applies to eligible weight tensors, not a complete GGUF
+copy. Reusing the directory across worker sessions can avoid retransmitting
+cached tensors. Windows workers retain the bundled Microsoft OpenMP runtime
+through process exit so its worker threads cannot execute from an unloaded DLL.
+
 Keep stream owners alive until models and backends have stopped, then close
 them. Closing with live native consumers is refused. Registered streams use
 explicit model device handles instead of the process-wide device registry,

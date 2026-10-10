@@ -27,6 +27,49 @@ def test_requires_stream_contract_before_native_use():
         rpc.RPCStream(object())
 
 
+@pytest.mark.parametrize("cache_kind", ["disabled", "string", "path"])
+def test_optional_stream_cache_directory_is_forwarded(monkeypatch, tmp_path, cache_kind):
+    ffi = get_ffi()
+    handle = ffi.cast("ggml_backend_dev_t", 1)
+    native = SimpleNamespace(ggml_backend_rpc_serve_stream=Mock(return_value=True))
+    backend = SimpleNamespace(ggml_backend_dev_by_name=Mock(return_value=handle))
+    monkeypatch.setattr(rpc, "_require_rpc", lambda: (ffi, backend, native))
+    wire = transport()
+    owner = rpc.RPCStream(wire)
+    cache_dir = {"disabled": None, "string": str(tmp_path), "path": tmp_path}[cache_kind]
+    owner.serve(devices=["CPU"], cache_dir=cache_dir)
+    expected = ffi.NULL if cache_dir is None else os.fsencode(tmp_path)
+    assert native.ggml_backend_rpc_serve_stream.call_args.args[1] == expected
+    wire.close.assert_called_once()
+
+
+def test_missing_stream_cache_directory_is_rejected_before_native(monkeypatch, tmp_path):
+    owner = rpc.RPCStream(transport())
+    monkeypatch.setattr(rpc, "_require_rpc", lambda: pytest.fail("Native serving must not run"))
+    with pytest.raises(ValueError):
+        owner.serve(devices=["CPU"], cache_dir=tmp_path / "missing")
+    owner.close()
+
+
+@pytest.mark.parametrize("cache_dir", ["", "bad\0path", b"bytes-path"])
+def test_invalid_stream_cache_directory_is_rejected_before_native(monkeypatch, cache_dir):
+    owner = rpc.RPCStream(transport())
+    monkeypatch.setattr(rpc, "_require_rpc", lambda: pytest.fail("Native serving must not run"))
+    with pytest.raises(ValueError):
+        owner.serve(devices=["CPU"], cache_dir=cache_dir)
+    owner.close()
+
+
+def test_stream_cache_file_is_rejected_before_native(monkeypatch, tmp_path):
+    cache_file = tmp_path / "file"
+    cache_file.write_bytes(b"not a directory")
+    owner = rpc.RPCStream(transport())
+    monkeypatch.setattr(rpc, "_require_rpc", lambda: pytest.fail("Native serving must not run"))
+    with pytest.raises(ValueError):
+        owner.serve(devices=["CPU"], cache_dir=cache_file)
+    owner.close()
+
+
 def test_exact_transfer_handles_short_reads_and_zero_length():
     ffi = get_ffi()
     parts = iter([b"ab", b"c", b"def"])
@@ -132,11 +175,14 @@ def tls_workers(tmp_path):
         "-subj", "/CN=localhost", "-addext", "subjectAltName=DNS:localhost"],
         capture_output=True, check=True)
     workers, owners, logs = [], [], []
-    def connect(*, reject_unauthenticated=False):
+    def connect(*, reject_unauthenticated=False, cache_dir=None):
         log = (tmp_path / f"worker-{len(workers)}.log").open("w+")
         logs.append(log)
-        worker = subprocess.Popen([sys.executable, str(Path(__file__).with_name("rpc_stream_worker.py")),
-            str(certificate), str(key)], stdout=subprocess.PIPE, stderr=log, text=True)
+        command = [sys.executable, str(Path(__file__).with_name("rpc_stream_worker.py")),
+            str(certificate), str(key)]
+        if cache_dir is not None:
+            command.append(str(cache_dir))
+        worker = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=log, text=True)
         workers.append(worker)
         port = int(worker.stdout.readline().strip())
         context = ssl.create_default_context(cafile=str(certificate))
@@ -220,3 +266,49 @@ def test_generation_over_two_caller_owned_tls_streams(tls_workers):
         assert all(worker.wait(timeout=10) == 0 for worker in workers)
     finally:
         get_lib().llama_log_set(ffi.NULL, ffi.NULL)
+
+
+@pytest.mark.integration
+def test_native_tensor_cache_populates_reuses_and_clears(tls_workers, tmp_path):
+    model_path = os.environ.get("LLAMA_TEST_MODEL")
+    if not model_path:
+        pytest.skip("LLAMA_TEST_MODEL is required for cache generation")
+    from llama_cpp_py_sync import Llama
+
+    connect, workers, _ = tls_workers
+    cache_dir = tmp_path / "tensor-cache"
+    cache_dir.mkdir()
+    sent = []
+    generated = []
+    cached_bytes = 0
+    for phase in ("populate", "reuse", "clear"):
+        if phase == "clear":
+            for entry in cache_dir.iterdir():
+                assert entry.is_file() and not entry.is_symlink()
+                entry.unlink()
+        owner = connect(cache_dir=cache_dir)
+        wire = owner.transport
+        sendall = wire.sendall
+        byte_count = [0]
+
+        def measure(data, sendall=sendall, byte_count=byte_count):
+            sendall(data)
+            byte_count[0] += len(data)
+
+        wire.sendall = measure
+        with Llama(model_path, rpc_streams=[owner], n_gpu_layers=-1, split_mode="layer",
+                tensor_split=[1], n_ctx=256, n_batch=32, n_threads=2) as model:
+            sent.append(byte_count[0])
+            generated.append(model.generate("Say hello.", max_tokens=4, temperature=0.0, seed=123))
+            assert generated[-1].strip()
+        owner.close()
+        assert workers[-1].wait(timeout=15) == 0
+        entries = list(cache_dir.iterdir())
+        if phase == "populate":
+            if not entries:
+                pytest.skip("Model has no cache-eligible weight tensors larger than 10 MiB")
+            cached_bytes = sum(entry.stat().st_size for entry in entries)
+        assert entries, "Native tensor cache was not populated"
+    assert sent[0] - sent[1] >= cached_bytes * 0.95
+    assert sent[2] == sent[0]
+    assert generated[0] == generated[1] == generated[2]

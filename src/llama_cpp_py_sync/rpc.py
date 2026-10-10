@@ -7,6 +7,7 @@ authenticated tunnel. Run blocking workers in a dedicated supervised process.
 from __future__ import annotations
 
 import operator
+import os
 import re
 import uuid
 from collections.abc import Sequence
@@ -190,8 +191,12 @@ class RPCStream:
                          for index in range(base.ggml_backend_reg_dev_count(registration))]
         return list(self._devices)
 
-    def serve(self, *, devices: Sequence[str], n_threads: int = 4):
-        """Serve one supplied connection, returning after disconnect cleanup."""
+    def serve(self, *, devices: Sequence[str], n_threads: int = 4, cache_dir=None):
+        """Serve one connection, optionally using an existing native tensor cache.
+
+        ``cache_dir`` accepts a string or path-like directory. ``None`` keeps
+        caching disabled. The caller owns the directory and its lifecycle.
+        """
         if self._mode != "new" or self._transport_closed:
             raise RuntimeError("RPC stream is not available for serving")
         if isinstance(devices, (str, bytes)) or not devices or any(
@@ -200,6 +205,13 @@ class RPCStream:
             raise ValueError("Invalid native device selection")
         if isinstance(n_threads, bool) or not 1 <= operator.index(n_threads) <= 2147483647:
             raise ValueError("Invalid native thread count")
+        cache_path = None
+        if cache_dir is not None:
+            cache_path = os.fspath(cache_dir)
+            if (not isinstance(cache_path, str) or not cache_path or "\0" in cache_path
+                    or not os.path.isdir(cache_path)):
+                raise ValueError("Cache directory must be an existing directory")
+            cache_path = os.fsencode(cache_path)
         ffi, backend, native = _require_rpc()
         if not hasattr(native, "ggml_backend_rpc_serve_stream"):
             raise RuntimeError("Native RPC stream support requires a rebuilt library")
@@ -208,8 +220,9 @@ class RPCStream:
             raise ValueError("Unknown native device name")
         self._mode = "serving"
         try:
-            if not native.ggml_backend_rpc_serve_stream(self._native, ffi.NULL, n_threads,
-                    len(handles), ffi.new("ggml_backend_dev_t[]", handles)):
+            if not native.ggml_backend_rpc_serve_stream(
+                    self._native, ffi.NULL if cache_path is None else cache_path,
+                    n_threads, len(handles), ffi.new("ggml_backend_dev_t[]", handles)):
                 raise RuntimeError("Native RPC stream initialization failed")
         finally:
             self._mode = "closed"

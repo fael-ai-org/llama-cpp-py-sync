@@ -26,5 +26,5 @@ with socket.socket() as listener:
             print("unauthenticated-peer-rejected", file=sys.stderr, flush=True)
 assert secured.version() == "TLSv1.3"
 owner = RPCStream(secured)
-owner.serve(devices=["CPU"], n_threads=2)
+owner.serve(devices=["CPU"], n_threads=2, cache_dir=sys.argv[3] if len(sys.argv) > 3 else None)
 print("stream-worker-stopped", flush=True)

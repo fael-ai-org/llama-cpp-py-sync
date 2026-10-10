@@ -792,6 +792,9 @@ def _configure_runtime_for_library(lib_path):
     """Configure dependent-library lookup without changing global stdout behavior."""
     if platform.system().lower() == "windows":
         lib_dir = str(Path(lib_path).parent)
+        from llama_cpp_py_sync._windows_runtime import retain_openmp_runtime
+
+        retain_openmp_runtime(lib_dir)
         try:
             if hasattr(os, "add_dll_directory"):
                 os.add_dll_directory(lib_dir)

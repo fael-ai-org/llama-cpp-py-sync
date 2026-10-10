@@ -237,6 +237,21 @@ def test_native_registration_over_mutual_tls_rejects_unauthenticated_peer(tls_wo
     assert "unauthenticated-peer-rejected" in logs[0].read()
 
 
+@pytest.mark.native
+@pytest.mark.parametrize("command", [20, 21, 22])
+def test_caller_stream_rejects_collective_network_commands(tls_workers, command):
+    if rpc.get_rpc_lib().RPC_PROTO_MAJOR_VERSION != 8:
+        pytest.skip("Collective command identifiers apply to RPC protocol 8")
+    connect, workers, _ = tls_workers
+    owner = connect()
+    owner.devices()  # Complete the ordinary authenticated RPC handshake first.
+    owner.transport.settimeout(5)
+    owner.transport.sendall(bytes([command]))
+    assert owner.transport.recv(1) == b""
+    assert workers[-1].wait(timeout=10) == 0
+    owner.close()
+
+
 @pytest.mark.integration
 def test_generation_over_two_caller_owned_tls_streams(tls_workers):
     model_path = os.environ.get("LLAMA_TEST_MODEL")

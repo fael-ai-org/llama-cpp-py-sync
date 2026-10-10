@@ -7,6 +7,22 @@ from scripts.apply_native_patches import apply
 from scripts.gen_bindings import generate_cdef
 
 
+def test_real_regeneration_uses_patched_vendor_headers(tmp_path):
+    import sys
+    root = Path(__file__).resolve().parents[1]
+    vendor = root / "vendor/llama.cpp"
+    if not (vendor / "include/llama.h").exists():
+        pytest.skip("Vendored headers required for actual regeneration")
+    output = tmp_path / "src/llama_cpp_py_sync/_cffi_bindings.py"
+    subprocess.run([sys.executable, str(root / "scripts/gen_bindings.py"),
+        "--vendor-path", str(vendor), "--output", str(output),
+        "--project-root", str(tmp_path)], check=True, capture_output=True)
+    generated = output.read_text(encoding="utf-8")
+    compile(generated, str(output), "exec")
+    assert "ggml_backend_rpc_serve_stream" in generated
+    assert "retain_openmp_runtime" in generated
+
+
 def test_binding_regeneration_retains_stream_layout_and_rpc_limits():
     root = Path(__file__).resolve().parents[1]
     header = root / "vendor/llama.cpp/ggml/include/ggml-rpc.h"

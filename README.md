@@ -455,6 +455,8 @@ upstream sources. It adds `ggml_backend_rpc_add_stream`,
 `ggml_backend_rpc_serve_stream` and `ggml_backend_rpc_remove_stream` through
 the existing transport abstraction; RPC messages and inference stay unchanged.
 Caller streams advertise no RDMA capabilities and never open a native listener.
+Collective RPC network operations are rejected on caller-owned streams because
+their separate peer connections cannot inherit the supplied transport security.
 The original TCP APIs remain available and remain unauthenticated/unencrypted.
 
 `RPCStream` accepts a blocking transport with `sendall`, `recv_into` and `close`,

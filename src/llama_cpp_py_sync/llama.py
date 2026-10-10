@@ -928,18 +928,6 @@ class Llama:
                 0.0,
             ),
         )
-        self._lib.llama_sampler_chain_add(
-            self._sampler, self._lib.llama_sampler_init_top_k(top_k)
-        )
-        self._lib.llama_sampler_chain_add(
-            self._sampler, self._lib.llama_sampler_init_top_p(top_p, 1)
-        )
-        self._lib.llama_sampler_chain_add(
-            self._sampler, self._lib.llama_sampler_init_min_p(min_p, 1)
-        )
-        self._lib.llama_sampler_chain_add(
-            self._sampler, self._lib.llama_sampler_init_temp(temperature)
-        )
         if grammar is not None:
             init_grammar = getattr(self._lib, "llama_sampler_init_grammar", None)
             if init_grammar is None:
@@ -965,6 +953,18 @@ class Llama:
                 self._sampler = None
                 raise ValueError("Failed to parse the supplied GBNF grammar")
             self._lib.llama_sampler_chain_add(self._sampler, grammar_sampler)
+        self._lib.llama_sampler_chain_add(
+            self._sampler, self._lib.llama_sampler_init_top_k(top_k)
+        )
+        self._lib.llama_sampler_chain_add(
+            self._sampler, self._lib.llama_sampler_init_top_p(top_p, 1)
+        )
+        self._lib.llama_sampler_chain_add(
+            self._sampler, self._lib.llama_sampler_init_min_p(min_p, 1)
+        )
+        self._lib.llama_sampler_chain_add(
+            self._sampler, self._lib.llama_sampler_init_temp(temperature)
+        )
         dist_seed = (
             int.from_bytes(os.urandom(4), "little")
             if seed is None
@@ -1013,7 +1013,6 @@ class Llama:
             if self._lib.llama_vocab_is_eog(self._vocab, new_token):
                 break
 
-            self._lib.llama_sampler_accept(self._sampler, new_token)
             piece = self.token_to_piece(new_token)
             generated_text += piece
 
@@ -1536,7 +1535,6 @@ class Llama:
                     if bool(stopped[0]) or next_state[0] == context._ffi.NULL:
                         break
                     h_state = next_state[0]
-                    self._lib.llama_sampler_accept(self._sampler, sampled)
                     sampled = self._sample_token()
 
                 sample_rate = context._ffi.new("int32_t *")

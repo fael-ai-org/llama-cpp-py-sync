@@ -142,7 +142,7 @@ class _FakeLib:
         pass
 
 
-def test_native_sampler_chain_adds_grammar_before_distribution():
+def test_native_grammar_filters_before_pruning_and_greedy_selection():
     model = object.__new__(Llama)
     model._lib = _FakeLib()
     model._ffi = ffi
@@ -163,4 +163,36 @@ def test_native_sampler_chain_adds_grammar_before_distribution():
 
     assert ("grammar", b'root ::= "ok"', b"root") in model._lib.calls
     added = [call[1] for call in model._lib.calls if call[0] == "add"]
-    assert added.index("grammar") < added.index("dist")
+    for sampler in ("top_k", "top_p", "min_p", "temp", "dist"):
+        assert added.index("grammar") < added.index(sampler)
+
+
+def test_generation_accepts_each_native_sample_exactly_once():
+    class SamplingLib:
+        def __init__(self):
+            self.accepted = []
+            self.tokens = iter([1, 2, 3])
+
+        def llama_sampler_sample(self, sampler, _ctx, _idx):
+            token = next(self.tokens)
+            self.llama_sampler_accept(sampler, token)
+            return token
+
+        def llama_sampler_accept(self, _sampler, token):
+            assert token not in self.accepted, "grammar token accepted twice"
+            self.accepted.append(token)
+
+        def llama_vocab_is_eog(self, _vocab, token):
+            return token == 3
+
+    model = object.__new__(Llama)
+    model._lib = SamplingLib()
+    model._sampler = object()
+    model._ctx = object()
+    model._vocab = object()
+    model.token_to_piece = lambda token: {1: "{", 2: "}"}[token]
+    model._eval_tokens = lambda _tokens, n_past: n_past + 1
+    assert "".join(model._generate_from_n_past(0, 3, None)) == "{}"
+    assert model._lib.accepted == [1, 2, 3]
+    model._sampler = None
+    model._ctx = None

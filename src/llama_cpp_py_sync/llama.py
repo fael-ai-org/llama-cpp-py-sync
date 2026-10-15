@@ -7,6 +7,7 @@ like loading models, tokenizing text, and generating completions.
 
 from __future__ import annotations
 
+import codecs
 import math
 import operator
 import os
@@ -832,11 +833,19 @@ class Llama:
 
     def token_to_piece(self, token: int) -> str:
         """Convert a single token to its string representation."""
-        buf = self._ffi.new("char[128]")
-        n = self._lib.llama_token_to_piece(self._vocab, token, buf, 128, 0, False)
+        return self._token_to_bytes(token).decode("utf-8", errors="replace")
+
+    def _token_to_bytes(self, token: int) -> bytes:
+        size = 128
+        buf = self._ffi.new(f"char[{size}]")
+        n = self._lib.llama_token_to_piece(self._vocab, token, buf, size, 0, False)
         if n < 0:
-            return ""
-        return self._ffi.string(buf, n).decode("utf-8", errors="replace")
+            size = -n
+            buf = self._ffi.new(f"char[{size}]")
+            n = self._lib.llama_token_to_piece(self._vocab, token, buf, size, 0, False)
+        if n < 0 or n > size:
+            raise RuntimeError("Unable to read token piece bytes")
+        return bytes(self._ffi.buffer(buf, n))
 
     def _eval_tokens(self, tokens: list[int], n_past: int) -> int:
         """Evaluate tokens and update the context.
@@ -1004,7 +1013,25 @@ class Llama:
         stop_sequences: list[str] | None,
         cancel_callback: Callable[[], bool] | None = None,
     ) -> Iterator[str]:
-        generated_text = ""
+        decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+        pending = ""
+        stops = list(stop_sequences or [])
+        if any(not isinstance(value, str) or not value for value in stops):
+            raise ValueError("Stop sequences must be nonempty strings")
+
+        def release(text: str, *, final: bool = False) -> tuple[str, str, bool]:
+            matches = [text.find(value) for value in stops if value in text]
+            if matches:
+                return text[:min(matches)], "", True
+            keep = 0
+            if not final:
+                for value in stops:
+                    for length in range(min(len(text), len(value) - 1), 0, -1):
+                        if text.endswith(value[:length]):
+                            keep = max(keep, length)
+                            break
+            return (text[:-keep], text[-keep:], False) if keep else (text, "", False)
+
         for _ in range(max_tokens):
             if cancel_callback is not None and cancel_callback():
                 raise RuntimeError("Generation was cancelled")
@@ -1013,22 +1040,17 @@ class Llama:
             if self._lib.llama_vocab_is_eog(self._vocab, new_token):
                 break
 
-            piece = self.token_to_piece(new_token)
-            generated_text += piece
-
-            if stop_sequences:
-                stopped_at: int | None = None
-                for stop_seq in stop_sequences:
-                    if stop_seq in generated_text:
-                        stopped_at = generated_text.find(stop_seq)
-                        generated_text = generated_text[:stopped_at]
-                        break
-                if stopped_at is not None:
-                    yield piece
-                    break
-
-            yield piece
+            pending += decoder.decode(self._token_to_bytes(new_token), final=False)
+            piece, pending, stopped = release(pending)
+            if piece:
+                yield piece
+            if stopped:
+                return
             n_past = self._eval_tokens([new_token], n_past)
+        pending += decoder.decode(b"", final=True)
+        piece, _, _ = release(pending, final=True)
+        if piece:
+            yield piece
 
     def _format_chat_prompt(
         self,

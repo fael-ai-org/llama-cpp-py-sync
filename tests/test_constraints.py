@@ -190,7 +190,7 @@ def test_generation_accepts_each_native_sample_exactly_once():
     model._sampler = object()
     model._ctx = object()
     model._vocab = object()
-    model.token_to_piece = lambda token: {1: "{", 2: "}"}[token]
+    model._token_to_bytes = lambda token: {1: b"{", 2: b"}"}[token]
     model._eval_tokens = lambda _tokens, n_past: n_past + 1
     assert "".join(model._generate_from_n_past(0, 3, None)) == "{}"
     assert model._lib.accepted == [1, 2, 3]

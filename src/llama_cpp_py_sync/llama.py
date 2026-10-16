@@ -12,6 +12,7 @@ import math
 import operator
 import os
 import re
+import time
 from dataclasses import dataclass, field
 from typing import Any, Callable, Iterator, Mapping, Sequence
 
@@ -882,6 +883,13 @@ class Llama:
                 result = self._lib.llama_decode(self._ctx, batch)
                 if result != 0:
                     raise RuntimeError(f"llama_decode failed with code {result}")
+                tracked = getattr(self, "_chat_cache_tokens", None)
+                if tracked is not None:
+                    if len(tracked) == n_past + offset:
+                        tracked.extend(chunk)
+                    else:
+                        self._chat_cache_tokens = None
+                        self._chat_cache_key = None
             finally:
                 self._lib.llama_batch_free(batch)
 
@@ -895,6 +903,8 @@ class Llama:
 
     def _clear_context_state(self) -> None:
         """Clear KV-cache / memory state so a new prompt can start at position 0."""
+        self._chat_cache_key = None
+        self._chat_cache_tokens = None
         clear_fn = getattr(self._lib, "llama_kv_cache_clear", None)
         if clear_fn is not None:
             clear_fn(self._ctx)
@@ -908,6 +918,47 @@ class Llama:
             if mem != self._ffi.NULL:
                 mem_clear(mem, True)
                 return
+
+    def _prepare_chat_prefix(self, tokens: list[int], cache_key: str | None) -> tuple[int, str]:
+        """Reuse only verified decoded tokens from the same caller-owned session.
+
+        Recurrent/hybrid memory may reject partial removal. In that case clear
+        the entire context, including any attention cells already removed.
+        No native state is serialized or restored through Python.
+        """
+        cached = getattr(self, "_chat_cache_tokens", None)
+        reason = "disabled" if cache_key is None else "session_changed"
+        if cache_key is not None and cache_key == getattr(self, "_chat_cache_key", None) and cached:
+            common = 0
+            # Always evaluate at least one prompt token to obtain fresh logits.
+            for left, right in zip(cached, tokens[:-1]):
+                if left != right:
+                    break
+                common += 1
+            if common == len(cached):
+                return common, "prefix_hit"
+            reason = "prefix_changed"
+            if common:
+                removed = False
+                remove = getattr(self._lib, "llama_kv_cache_seq_rm", None)
+                if remove is not None:
+                    removed = bool(remove(self._ctx, 0, common, -1))
+                else:
+                    get_memory = getattr(self._lib, "llama_get_memory", None)
+                    remove = getattr(self._lib, "llama_memory_seq_rm", None)
+                    if get_memory is not None and remove is not None:
+                        memory = get_memory(self._ctx)
+                        if memory != self._ffi.NULL:
+                            removed = bool(remove(memory, 0, common, -1))
+                if removed:
+                    self._chat_cache_tokens = cached[:common]
+                    return common, "prefix_trimmed"
+                reason = "rewind_unsupported"
+        self._clear_context_state()
+        if cache_key is not None:
+            self._chat_cache_key = cache_key
+            self._chat_cache_tokens = []
+        return 0, reason
 
     def _configure_generation_sampler(
         self,
@@ -1228,6 +1279,8 @@ class Llama:
         grammar_root: str = "root",
         response_format: Any = None,
         cancel_callback: Callable[[], bool] | None = None,
+        cache_key: str | None = None,
+        on_stats: Callable[[dict[str, Any]], None] | None = None,
     ) -> dict[str, Any] | Iterator[dict[str, Any]]:
         """Create a chat completion with ordered text/image content parts.
 
@@ -1235,36 +1288,47 @@ class Llama:
         failed multimodal request is never silently converted to text-only
         inference. ``grammar`` applies a native GBNF constraint, while
         ``response_format`` provides text/JSON/JSON-schema convenience forms.
+        ``cache_key`` opts text requests into live, session-scoped token-prefix
+        reuse. Omit it for an independent request. Calls must be serialized;
+        changing the key or any intervening non-chat inference invalidates reuse.
+        ``on_stats`` receives timings and token counts, never prompt content.
         """
         generation_grammar, generation_grammar_root = resolve_grammar(
             grammar, grammar_root, response_format
         )
         if multimodal_context is not None and getattr(multimodal_context, "model", None) is not self:
             raise ValueError("multimodal_context belongs to a different Llama model")
+        if cache_key is not None and (not isinstance(cache_key, str) or not cache_key):
+            raise ValueError("cache_key must be a nonempty string or None")
+        if cache_key is not None and multimodal_context is not None:
+            raise ValueError("Live prefix reuse supports text chat only")
 
         def _run() -> Iterator[str]:
-            self._clear_context_state()
-            self._configure_generation_sampler(
-                temperature,
-                top_k,
-                top_p,
-                min_p,
-                repeat_penalty,
-                repeat_last_n,
-                seed,
-                generation_grammar,
-                generation_grammar_root,
-            )
-            prompt, images = self._format_chat_prompt(messages, multimodal_context)
-            self._set_abort_callback(cancel_callback)
+            started = time.perf_counter()
+            stats: dict[str, Any] = {"reused_tokens": 0, "prefilled_tokens": None,
+                                     "cache_status": "disabled", "ttft_seconds": None,
+                                     "prefill_seconds": None, "completed": False}
             try:
+                prompt, images = self._format_chat_prompt(messages, multimodal_context)
+                self._set_abort_callback(cancel_callback)
                 if multimodal_context is None:
                     tokens = self.tokenize(prompt, add_special=True)
-                    if len(tokens) >= self._n_ctx:
+                    if len(tokens) + max_tokens >= self._n_ctx:
                         raise ValueError(
-                            f"Prompt too long: {len(tokens)} tokens exceeds context size {self._n_ctx}"
+                            "Chat request exceeds the model context window"
                         )
-                    n_past = self._eval_tokens(tokens, 0)
+                    reused, status = self._prepare_chat_prefix(tokens, cache_key)
+                    stats.update(input_tokens=len(tokens), reused_tokens=reused,
+                                 prefilled_tokens=len(tokens)-reused, cache_status=status)
+                else:
+                    self._clear_context_state()
+                self._configure_generation_sampler(
+                    temperature, top_k, top_p, min_p, repeat_penalty,
+                    repeat_last_n, seed, generation_grammar, generation_grammar_root,
+                )
+                prefill_started = time.perf_counter()
+                if multimodal_context is None:
+                    n_past = self._eval_tokens(tokens[reused:], reused)
                 else:
                     with multimodal_context.tokenize_prompt(
                         prompt,
@@ -1276,11 +1340,23 @@ class Llama:
                         )
                 if n_past + max_tokens >= self._n_ctx:
                     raise ValueError("Chat request exceeds the model context window")
-                yield from self._generate_from_n_past(
+                stats["prefill_seconds"] = time.perf_counter() - prefill_started
+                for piece in self._generate_from_n_past(
                     n_past, max_tokens, stop_sequences, cancel_callback
-                )
+                ):
+                    if piece and stats["ttft_seconds"] is None:
+                        stats["ttft_seconds"] = time.perf_counter() - started
+                    yield piece
+                if cancel_callback is not None and cancel_callback():
+                    raise RuntimeError("Generation was cancelled")
+                stats["completed"] = True
             finally:
                 self._set_abort_callback(None)
+                if not stats["completed"]:
+                    self._clear_context_state()
+                stats["total_seconds"] = time.perf_counter() - started
+                if on_stats is not None:
+                    on_stats(stats)
 
         if not stream:
             content = "".join(_run())

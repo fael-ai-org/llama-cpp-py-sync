@@ -1,11 +1,39 @@
 """Pinned synchronization and publication-order regressions."""
 import json
+import shlex
 import subprocess
 from pathlib import Path
 
 import pytest
 
 from scripts import sync_upstream
+
+
+def test_upstream_annotated_tags_do_not_occupy_wrapper_release_namespace(tmp_path):
+    workflow = (Path(__file__).resolve().parents[1] / ".github/workflows/sync.yml").read_text()
+    fetch_line = next(line.strip() for line in workflow.splitlines()
+                      if "git fetch" in line and "refs/tags/_upstream" in line)
+    upstream = tmp_path / "upstream"
+    wrapper = tmp_path / "wrapper"
+
+    def git(repo, *args, check=True):
+        return subprocess.run(["git", "-C", str(repo), "-c", "user.name=Test",
+                               "-c", "user.email=test@example.invalid", *args],
+                              check=check, capture_output=True, text=True)
+
+    for repo in (upstream, wrapper):
+        repo.mkdir()
+        git(repo, "init")
+        (repo / "fixture.txt").write_text(repo.name)
+        git(repo, "add", "fixture.txt")
+        git(repo, "commit", "-m", repo.name)
+    git(upstream, "tag", "-a", "b12345", "-m", "upstream release")
+    git(wrapper, "remote", "add", "upstream", str(upstream))
+    subprocess.run(shlex.split(fetch_line), cwd=wrapper, check=True, capture_output=True)
+    assert git(wrapper, "show-ref", "--verify", "refs/tags/b12345", check=False).returncode != 0
+    assert git(wrapper, "rev-parse", "refs/tags/_upstream/b12345^{commit}").stdout == git(upstream, "rev-parse", "HEAD").stdout
+    git(wrapper, "tag", "-a", "b12345", "-m", "validated wrapper")
+    assert git(wrapper, "rev-parse", "b12345^{commit}").stdout == git(wrapper, "rev-parse", "HEAD").stdout
 
 
 def test_pinned_sync_records_requested_commit_instead_of_newer_head(tmp_path, monkeypatch):

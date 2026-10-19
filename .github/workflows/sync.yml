@@ -50,7 +50,9 @@ jobs:
           # This avoids string-sorting pitfalls (e.g. tags like "master-<sha>" sorting after "b7744").
           git remote remove upstream >/dev/null 2>&1 || true
           git remote add upstream ${{ env.LLAMA_CPP_REPO }}
-          git fetch --force upstream '+refs/tags/*:refs/tags/_upstream/*'
+          # Disable automatic tag following: only the namespaced upstream refs
+          # belong here. Release tags must point to validated wrapper commits.
+          git fetch --no-tags --force upstream '+refs/tags/*:refs/tags/_upstream/*'
 
           LATEST_UPSTREAM_TAG_REF=$(git for-each-ref --sort=-creatordate --count=1 --format='%(refname)' refs/tags/_upstream)
           if [ -z "${LATEST_UPSTREAM_TAG_REF}" ]; then

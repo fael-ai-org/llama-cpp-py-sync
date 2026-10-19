@@ -55,3 +55,9 @@ def test_native_patch_applies_once_and_rejects_conflicting_sources(tmp_path):
     header.write_text(header.read_text().replace("ggml_rpc_stream", "conflicting_rpc_stream"))
     with pytest.raises(subprocess.CalledProcessError):
         apply(tmp_path)
+
+
+def test_failed_patch_check_prints_git_diagnostics(tmp_path, capfd):
+    with pytest.raises(subprocess.CalledProcessError):
+        apply(tmp_path)
+    assert "ggml/include/ggml-rpc.h" in capfd.readouterr().err

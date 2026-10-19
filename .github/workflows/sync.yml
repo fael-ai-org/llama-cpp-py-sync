@@ -41,8 +41,8 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y jq
 
-      - name: Mirror latest upstream tag
-        id: mirror_tag
+      - name: Resolve latest upstream tag
+        id: upstream
         run: |
           set -euo pipefail
 
@@ -61,44 +61,18 @@ jobs:
           # Strip prefix: refs/tags/_upstream/<tag> -> <tag>
           LATEST_UPSTREAM_TAG=${LATEST_UPSTREAM_TAG_REF#refs/tags/_upstream/}
 
-          if git ls-remote --exit-code --tags origin "refs/tags/${LATEST_UPSTREAM_TAG}" >/dev/null 2>&1; then
-            echo "Tag already exists in this repo: ${LATEST_UPSTREAM_TAG}"
-            exit 0
-          fi
+          LATEST_UPSTREAM_TAG_SHA=$(git rev-parse "${LATEST_UPSTREAM_TAG_REF}^{commit}")
+          echo "upstream_tag=${LATEST_UPSTREAM_TAG}" >> "$GITHUB_OUTPUT"
+          echo "upstream_sha=${LATEST_UPSTREAM_TAG_SHA}" >> "$GITHUB_OUTPUT"
 
-          LATEST_UPSTREAM_TAG_SHA=$(git rev-parse "${LATEST_UPSTREAM_TAG_REF}")
-
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-
-          # The runner can end up with stale local tags. We only treat the tag as existing
-          # if it exists on origin (checked above). Ensure local state can't block mirroring.
-          if git rev-parse -q --verify "refs/tags/${LATEST_UPSTREAM_TAG}" >/dev/null; then
-            git tag -d "${LATEST_UPSTREAM_TAG}"
-          fi
-
-          git tag -a "${LATEST_UPSTREAM_TAG}" -m "Mirror llama.cpp tag ${LATEST_UPSTREAM_TAG} (${LATEST_UPSTREAM_TAG_SHA})"
-          git push origin "refs/tags/${LATEST_UPSTREAM_TAG}"
-          echo "mirrored_tag=${LATEST_UPSTREAM_TAG}" >> "$GITHUB_OUTPUT"
-
-      - name: Trigger Build Wheels for mirrored tag
-        if: steps.mirror_tag.outputs.mirrored_tag != ''
-        env:
-          MIRRORED_TAG: ${{ steps.mirror_tag.outputs.mirrored_tag }}
-        run: |
-          set -euo pipefail
-
-          curl -sS -L \
-            -X POST \
-            -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
-            -H "Accept: application/vnd.github+json" \
-            "${{ github.api_url }}/repos/${{ github.repository }}/actions/workflows/build.yml/dispatches" \
-            -d "{\"ref\":\"refs/tags/${MIRRORED_TAG}\"}"
-      
       - name: Check for upstream changes
         id: check
+        env:
+          UPSTREAM_TAG: ${{ steps.upstream.outputs.upstream_tag }}
         run: |
-          UPSTREAM_SHA=$(git ls-remote ${{ env.LLAMA_CPP_REPO }} HEAD | cut -f1)
+          set -euo pipefail
+          UPSTREAM_SHA="${{ steps.upstream.outputs.upstream_sha }}"
+          test -n "${UPSTREAM_SHA}"
           echo "upstream_sha=${UPSTREAM_SHA}" >> $GITHUB_OUTPUT
           
           if [ -f .llama_cpp_sync_state.json ]; then
@@ -108,7 +82,10 @@ jobs:
           fi
           echo "last_sha=${LAST_SHA}" >> $GITHUB_OUTPUT
           
-          if [ "${{ github.event.inputs.force_sync }}" == "true" ] || [ "${UPSTREAM_SHA}" != "${LAST_SHA}" ]; then
+          # Revalidate if a previous run committed bindings but never published
+          # its tag, or upstream added a tag on an already-synchronized commit.
+          if [ "${{ github.event.inputs.force_sync }}" == "true" ] || [ "${UPSTREAM_SHA}" != "${LAST_SHA}" ] || \
+             ! git ls-remote --exit-code --tags origin "refs/tags/${UPSTREAM_TAG}" >/dev/null 2>&1; then
             echo "needs_sync=true" >> $GITHUB_OUTPUT
           else
             echo "needs_sync=false" >> $GITHUB_OUTPUT
@@ -117,7 +94,7 @@ jobs:
       - name: Sync upstream
         if: steps.check.outputs.needs_sync == 'true'
         run: |
-          python scripts/sync_upstream.py --force
+          python scripts/sync_upstream.py --force --revision "${{ steps.check.outputs.upstream_sha }}"
       
       - name: Regenerate bindings
         if: steps.check.outputs.needs_sync == 'true'
@@ -164,5 +141,38 @@ jobs:
           git add src/llama_cpp_py_sync/_version.py
           
           UPSTREAM_SHORT=$(echo "${{ steps.check.outputs.upstream_sha }}" | cut -c1-8)
-          git commit -m "sync: update to llama.cpp ${UPSTREAM_SHORT}" || echo "No changes to commit"
+          if ! git diff --cached --quiet; then
+            git commit -m "sync: update to llama.cpp ${UPSTREAM_SHORT}"
+          fi
           git push
+
+      - name: Publish validated upstream tag
+        if: steps.check.outputs.needs_sync == 'true'
+        id: mirror_tag
+        env:
+          LATEST_UPSTREAM_TAG: ${{ steps.upstream.outputs.upstream_tag }}
+          LATEST_UPSTREAM_TAG_SHA: ${{ steps.upstream.outputs.upstream_sha }}
+        run: |
+          set -euo pipefail
+          if git ls-remote --exit-code --tags origin "refs/tags/${LATEST_UPSTREAM_TAG}" >/dev/null 2>&1; then
+            echo "Tag already exists in this repo: ${LATEST_UPSTREAM_TAG}"
+            exit 0
+          fi
+          # Tag the pushed, validated bindings commit, never the pre-sync source.
+          git tag -a "${LATEST_UPSTREAM_TAG}" -m "Mirror llama.cpp tag ${LATEST_UPSTREAM_TAG} (${LATEST_UPSTREAM_TAG_SHA})"
+          git push origin "refs/tags/${LATEST_UPSTREAM_TAG}"
+          echo "mirrored_tag=${LATEST_UPSTREAM_TAG}" >> "$GITHUB_OUTPUT"
+
+      - name: Trigger Build Wheels for mirrored tag
+        if: steps.mirror_tag.outputs.mirrored_tag != ''
+        env:
+          MIRRORED_TAG: ${{ steps.mirror_tag.outputs.mirrored_tag }}
+        run: |
+          set -euo pipefail
+
+          curl --fail-with-body -sS -L \
+            -X POST \
+            -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+            -H "Accept: application/vnd.github+json" \
+            "${{ github.api_url }}/repos/${{ github.repository }}/actions/workflows/build.yml/dispatches" \
+            -d "{\"ref\":\"refs/tags/${MIRRORED_TAG}\"}"

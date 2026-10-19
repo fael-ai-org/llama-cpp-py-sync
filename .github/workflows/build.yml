@@ -171,34 +171,15 @@ jobs:
 
       - name: Resolve pinned llama.cpp SHA
         id: pinned
+        env:
+          UPSTREAM_SHA: ${{ needs.check-upstream.outputs.upstream_sha }}
         run: |
-          python - <<'PY'
-          import json, os, pathlib, re, sys
-
-          root = pathlib.Path('.')
-          sha = ''
-
-          state = root / '.llama_cpp_sync_state.json'
-          if state.exists():
-              try:
-                  sha = json.loads(state.read_text(encoding='utf-8')).get('last_sync_sha', '')
-              except Exception:
-                  sha = ''
-
-          if not sha:
-              bindings = root / 'src' / 'llama_cpp_py_sync' / '_cffi_bindings.py'
-              if bindings.exists():
-                  m = re.search(r"llama\.cpp commit:\s*([0-9a-fA-F]{7,40})", bindings.read_text(encoding='utf-8'))
-                  if m:
-                      sha = m.group(1)
-
-          if not sha:
-              print('Could not resolve pinned llama.cpp SHA', file=sys.stderr)
-              sys.exit(1)
-
-          print(f"sha={sha}")
-          print(f"sha={sha}", file=open(os.environ['GITHUB_OUTPUT'], 'a'))
-          PY
+          set -euo pipefail
+          if [[ ! "${UPSTREAM_SHA}" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "Could not resolve the requested build source" >&2
+            exit 1
+          fi
+          echo "sha=${UPSTREAM_SHA}" >> "$GITHUB_OUTPUT"
 
       - name: Resolve bindings timestamp
         id: bind_ts

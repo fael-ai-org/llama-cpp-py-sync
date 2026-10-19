@@ -69,8 +69,7 @@ index e9af71228..72a542816 100644
 +                             socket_ptr sock, bool allow_network = true) {
 +    GGML_UNUSED(allow_network);
      rpc_server server(backends, cache_dir);
-@@ -2374,2 +2389,8 @@ static void rpc_serve_client(const std::vector<ggml_backend_t> & backends, const
-         }
+@@ -2375 +2390,7 @@ static void rpc_serve_client(const std::vector<ggml_backend_t> & backends, const
 +#if RPC_PROTO_MAJOR_VERSION >= 8
 +        if (!allow_network && (cmd == RPC_CMD_COMM_INIT || cmd == RPC_CMD_COMM_ALLREDUCE || cmd == RPC_CMD_COMM_FREE)) {
 +            GGML_LOG_ERROR("Collective network operations are unavailable on caller-owned streams\n");
@@ -142,10 +141,9 @@ diff --git a/ggml/src/ggml-rpc/transport.cpp b/ggml/src/ggml-rpc/transport.cpp
 index b28d16605..23b3c8625 100644
 --- a/ggml/src/ggml-rpc/transport.cpp
 +++ b/ggml/src/ggml-rpc/transport.cpp
-@@ -1,2 +1,3 @@
- #include "transport.h"
+@@ -1 +1,2 @@
 +#include "ggml-rpc.h"
- #include "ggml-impl.h"
+ #include "transport.h"
 @@ -133,2 +134,3 @@ struct socket_t::impl {
      impl(sockfd_t fd) : use_rdma(false), fd(fd) {}
 +    impl(const ggml_rpc_stream & callbacks) : use_rdma(false), fd((sockfd_t)-1), callbacks(callbacks) {}
@@ -161,14 +159,14 @@ index b28d16605..23b3c8625 100644
 +        return;
 +    }
  #ifdef GGML_RPC_RDMA
-@@ -539,2 +546,3 @@ bool socket_t::impl::rdma_recv(void * data, size_t size) {
- bool socket_t::impl::send_data(const void * data, size_t size) {
+@@ -550,2 +557,3 @@ bool socket_t::impl::send_data(const void * data, size_t size) {
+ #endif
 +    if (callbacks) return callbacks->send(callbacks->user_data, data, size);
- #ifdef GGML_RPC_RDMA_APPLE
-@@ -563,2 +571,3 @@ bool socket_t::impl::send_data(const void * data, size_t size) {
- bool socket_t::impl::recv_data(void * data, size_t size) {
+     size_t bytes_sent = 0;
+@@ -574,2 +582,3 @@ bool socket_t::impl::recv_data(void * data, size_t size) {
+ #endif
 +    if (callbacks) return callbacks->recv(callbacks->user_data, data, size);
- #ifdef GGML_RPC_RDMA_APPLE
+     size_t bytes_recv = 0;
 @@ -592,2 +601,3 @@ void socket_t::impl::get_caps(uint8_t * local_caps) {
      memset(local_caps, 0, RPC_CONN_CAPS_SIZE);
 +    if (callbacks) return;

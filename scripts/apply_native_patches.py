@@ -9,8 +9,10 @@ def apply(vendor_path: Path):
     args = ["git", "-C", str(vendor_path), "apply"]
     if subprocess.run(args + ["--reverse", "--check", str(patch)], capture_output=True).returncode == 0:
         return
-    subprocess.run(args + ["--check", str(patch)], check=True, capture_output=True)
-    subprocess.run(args + [str(patch)], check=True, capture_output=True)
+    # Keep failed forward checks visible in CI, including the exact conflicting
+    # file and hunk. Only the expected negative reverse probe is quiet.
+    subprocess.run(args + ["--check", str(patch)], check=True)
+    subprocess.run(args + [str(patch)], check=True)
 
 
 if __name__ == "__main__":

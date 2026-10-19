@@ -9,6 +9,7 @@ the current commit SHA.
 
 import argparse
 import json
+import re
 import subprocess
 import sys
 from datetime import datetime
@@ -162,13 +163,14 @@ def check_update_needed(project_root: Path) -> Tuple[bool, Optional[str], Option
     return False, local_sha, remote_sha
 
 
-def sync(project_root: Path, force: bool = False) -> bool:
+def sync(project_root: Path, force: bool = False, revision: Optional[str] = None) -> bool:
     """
     Synchronize with upstream.
 
     Args:
         project_root: Project root directory.
         force: Force sync even if already up to date.
+        revision: Optional full upstream commit SHA to validate and build.
 
     Returns:
         True if sync was performed, False otherwise.
@@ -176,18 +178,37 @@ def sync(project_root: Path, force: bool = False) -> bool:
     vendor_path = project_root / VENDOR_DIR
     state = load_sync_state(project_root)
 
-    update_needed, local_sha, remote_sha = check_update_needed(project_root)
+    if revision is not None and not re.fullmatch(r"[0-9a-f]{40}", revision):
+        raise ValueError("revision must be a full lowercase upstream commit SHA")
+    if revision is None:
+        update_needed, local_sha, remote_sha = check_update_needed(project_root)
+    else:
+        local_sha, remote_sha = get_local_head_sha(vendor_path), revision
+        update_needed = local_sha != remote_sha
 
     if not update_needed and not force:
         return False
 
     if not vendor_path.exists():
         success = clone_upstream(vendor_path)
-    else:
+    elif revision is None:
         success = update_upstream(vendor_path)
+    else:
+        success = True
+
+    if success and revision is not None:
+        code, _stdout, stderr = run_git_command(["fetch", "--depth", "1", "origin", revision], cwd=vendor_path)
+        if code == 0:
+            code, _stdout, stderr = run_git_command(["checkout", "--detach", revision], cwd=vendor_path)
+        if code != 0:
+            print(f"Error checking out upstream revision: {stderr}", file=sys.stderr)
+            return False
 
     if success:
         new_sha = get_local_head_sha(vendor_path)
+        if revision is not None and new_sha != revision:
+            print("Checked-out source does not match the requested revision", file=sys.stderr)
+            return False
         state["last_sync_sha"] = new_sha
         state["last_sync_time"] = datetime.utcnow().isoformat()
         state["sync_count"] = state.get("sync_count", 0) + 1
@@ -224,6 +245,12 @@ def main():
         help="Print current commit SHA and exit"
     )
     parser.add_argument(
+        "--revision",
+        type=str,
+        default=None,
+        help="Synchronize an exact full upstream commit SHA instead of remote HEAD",
+    )
+    parser.add_argument(
         "--project-root",
         type=Path,
         default=None,
@@ -252,7 +279,7 @@ def main():
             print("UP_TO_DATE")
             sys.exit(0)
 
-    success = sync(project_root, force=args.force)
+    success = sync(project_root, force=args.force, revision=args.revision)
     sys.exit(0 if success else 1)
 
 

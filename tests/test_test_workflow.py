@@ -22,6 +22,7 @@ def test_runner_overrides_preserve_every_configured_os_python_pair():
     assert "${{ fromJson(needs.config.outputs.test_pythons) }}" in matrix
     assert "runs-on: ${{ matrix.runner || matrix.os }}" in job
     assert "fail-fast: false" in job
+    assert "max-parallel: 2" in job
     assert "exclude:" not in matrix
     assert len(overrides) == 2
     assert {(item["os"], item["python-version"]) for item in overrides} == {

@@ -67,6 +67,8 @@ def preprocess_header(content: str) -> str:
     This removes compiler-specific attributes, macros, and other
     elements that CFFI cannot parse directly.
     """
+    # C joins continued physical lines before interpreting directives/comments.
+    content = re.sub(r'\\\r?\n', '', content)
     content = re.sub(r'#include\s*[<"][^>"]+[>"]', '', content)
 
     def _unwrap_deprecated_macros(text: str) -> str:
@@ -165,6 +167,11 @@ def preprocess_header(content: str) -> str:
 
     content = re.sub(r'//[^\n]*\n', '\n', content)
     content = re.sub(r'/\*.*?\*/', '', content, flags=re.DOTALL)
+
+    # Numeric/object-like defines can precede a function with no intervening
+    # semicolon. Do not let a directive become part of its return type when
+    # extract_functions scans top-level C declarations.
+    content = re.sub(r'^[ \t]*#[^\n]*(?:\n|$)', '\n', content, flags=re.MULTILINE)
 
     content = re.sub(r'\n\s*\n\s*\n+', '\n\n', content)
 

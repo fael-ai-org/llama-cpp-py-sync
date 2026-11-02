@@ -1,5 +1,6 @@
 """Live prefix lifecycle tests without loading a native model."""
-from types import SimpleNamespace
+import gc
+from types import GeneratorType, SimpleNamespace
 
 import pytest
 
@@ -107,7 +108,15 @@ def test_interrupted_or_failed_generation_invalidates_cache(failure):
                       cancel_callback=lambda: failure == 'cancel')
     assert next(stream)['choices'][0]['delta']['content'] == 'x'
     if failure == 'close':
+        # Keep the inner iterator alive, as debuggers/tracers can do. Closing
+        # the public stream must clean up without relying on garbage collection.
+        inner = next(value for value in gc.get_objects()
+                     if isinstance(value, GeneratorType)
+                     and value.gi_code.co_name == '_run'
+                     and value.gi_frame is not None
+                     and value.gi_frame.f_locals.get('self') is model)
         stream.close()
+        assert inner.gi_frame is None
     else:
         with pytest.raises(RuntimeError):
             list(stream)

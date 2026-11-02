@@ -13,6 +13,7 @@ import operator
 import os
 import re
 import time
+from contextlib import closing
 from dataclasses import dataclass, field
 from typing import Any, Callable, Iterator, Mapping, Sequence
 
@@ -1373,21 +1374,22 @@ class Llama:
 
         def _stream() -> Iterator[dict[str, Any]]:
             first = True
-            for piece in _run():
-                yield {
-                    "object": "chat.completion.chunk",
-                    "choices": [
-                        {
-                            "index": 0,
-                            "delta": {
-                                "role": "assistant" if first else None,
-                                "content": piece,
-                            },
-                            "finish_reason": None,
-                        }
-                    ],
-                }
-                first = False
+            with closing(_run()) as pieces:
+                for piece in pieces:
+                    yield {
+                        "object": "chat.completion.chunk",
+                        "choices": [
+                            {
+                                "index": 0,
+                                "delta": {
+                                    "role": "assistant" if first else None,
+                                    "content": piece,
+                                },
+                                "finish_reason": None,
+                            }
+                        ],
+                    }
+                    first = False
             yield {
                 "object": "chat.completion.chunk",
                 "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],

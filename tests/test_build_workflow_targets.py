@@ -32,23 +32,21 @@ def test_manual_build_targets_are_selectable_and_publishable():
 
 def test_partial_rebuilds_do_not_publish_to_pypi():
     workflow = WORKFLOW.read_text(encoding="utf-8")
-    publish_section = workflow.split("- name: Publish to PyPI", 1)[1]
-
-    assert "startsWith(github.ref, 'refs/tags/')" in publish_section
-    assert "build_target == 'all'" in publish_section
-    assert "github.event_name == 'push'" not in publish_section
+    assert "twine upload" not in workflow
+    assert "draft: true" in workflow
+    assert "make_latest: false" in workflow
 
     pypi_artifact_condition = (
         "if: startsWith(github.ref, 'refs/tags/') && "
         "needs.check-upstream.outputs.build_target == 'all'"
     )
-    assert workflow.split("- name: Publish to PyPI", 1)[0].count(pypi_artifact_condition) == 2
+    assert workflow.count(pypi_artifact_condition) == 2
 
 
 def test_release_assets_exclude_ci_test_signing_files():
     workflow = WORKFLOW.read_text(encoding="utf-8")
     release_section = workflow.split("- name: Create Release", 1)[1].split(
-        "- name: Publish to PyPI", 1
+        "\n  attest-signed-release:", 1
     )[0]
     pattern = next(
         line.strip()[len("files: "):]

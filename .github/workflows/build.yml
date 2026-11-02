@@ -1,10 +1,26 @@
 name: Build Wheels
+run-name: ${{ inputs.signing_session != '' && format('Finalize signed {0}', inputs.signing_session) || github.workflow }}
 
 on:
   push:
     tags: ['*']
   workflow_dispatch:
     inputs:
+      signed_release_id:
+        description: 'Draft release ID for final signed-byte attestation only'
+        required: false
+        default: ''
+        type: string
+      signing_session:
+        description: 'Locally authorized signing session ID'
+        required: false
+        default: ''
+        type: string
+      signing_manifest_sha256:
+        description: 'SHA-256 of the locally signed release manifest'
+        required: false
+        default: ''
+        type: string
       force_rebuild:
         description: 'Force rebuild even if no upstream changes'
         required: false
@@ -39,6 +55,7 @@ env:
 
 jobs:
   check-upstream:
+    if: github.event.inputs.signed_release_id == ''
     runs-on: ubuntu-latest
     outputs:
       should_build: ${{ steps.check.outputs.should_build }}
@@ -1695,17 +1712,127 @@ jobs:
           files: dist/*.whl
           fail_on_unmatched_files: true
           overwrite_files: true
+          draft: true
+          make_latest: false
           body: |
             **Upstream llama.cpp:**
             - Release page: https://github.com/ggml-org/llama.cpp/releases/tag/${{ needs.check-upstream.outputs.upstream_tag }}
             - Tag page: https://github.com/ggml-org/llama.cpp/tree/${{ needs.check-upstream.outputs.upstream_tag }}
           generate_release_notes: true
       
-      - name: Publish to PyPI
-        if: startsWith(github.ref, 'refs/tags/') && needs.check-upstream.outputs.build_target == 'all' && needs.check-upstream.outputs.upstream_tag_exists == 'true' && env.PYPI_API_TOKEN != ''
+      # Signed PyPI publication is an independent operator action; candidates stay in drafts.
+
+  attest-signed-release:
+    if: github.event_name == 'workflow_dispatch' && inputs.signed_release_id != ''
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Download selected draft assets
         env:
-          PYPI_API_TOKEN: ${{ secrets.PYPI_API_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_ID: ${{ inputs.signed_release_id }}
         run: |
-          python -m pip install --upgrade pip
-          python -m pip install --upgrade packaging twine
-          twine upload dist_pypi/*.whl -u __token__ -p $PYPI_API_TOKEN
+          set -euo pipefail
+          [[ "$RELEASE_ID" =~ ^[0-9]+$ ]]
+          TAG="$(gh api "repos/$GH_REPO/releases/$RELEASE_ID" --jq 'select(.draft == true and .immutable != true) | .tag_name')"
+          test -n "$TAG"
+          gh release download "$TAG" --repo "$GH_REPO" --dir signed-release --pattern release-signing.json --pattern release-signing.sig.json
+      - name: Authenticate local signing manifest
+        id: authenticated
+        env:
+          RELEASE_ID: ${{ inputs.signed_release_id }}
+          SIGNING_SESSION: ${{ inputs.signing_session }}
+          MANIFEST_SHA256: ${{ inputs.signing_manifest_sha256 }}
+        shell: python
+        run: |
+          import base64, hashlib, json, os, pathlib, re, subprocess
+          root = pathlib.Path("signed-release")
+          manifest = root / "release-signing.json"
+          signature = json.loads((root / "release-signing.sig.json").read_text())
+          assert hashlib.sha256(manifest.read_bytes()).hexdigest() == os.environ["MANIFEST_SHA256"]
+          key = pathlib.Path("scripts/release-signing-public.pem")
+          der = subprocess.check_output(["openssl", "pkey", "-pubin", "-in", str(key), "-outform", "DER"])
+          expected = "37308863a4298862c06004abc7ecf968cc6cba5a55ef36abea57a785864f1dee"
+          assert hashlib.sha256(der).hexdigest() == expected == signature["spki_sha256"]
+          assert signature["algorithm"] == "RSASSA_PKCS1_V1_5_SHA_256"
+          assert base64.b64decode(signature["digest_base64"], validate=True) == hashlib.sha256(manifest.read_bytes()).digest()
+          detached = pathlib.Path("manifest-signature.bin")
+          detached.write_bytes(base64.b64decode(signature["signature_base64"], validate=True))
+          subprocess.run(["openssl", "dgst", "-sha256", "-verify", str(key), "-signature", str(detached), str(manifest)], check=True)
+          data = json.loads(manifest.read_text())
+          assert data["repository"] == os.environ["GITHUB_REPOSITORY"]
+          assert data["release_id"] == int(os.environ["RELEASE_ID"])
+          assert data["session"] == os.environ["SIGNING_SESSION"]
+          assert re.fullmatch(r"[0-9a-f]{40}", data["signer_revision"])
+          with open(os.environ["GITHUB_OUTPUT"], "a") as stream:
+              stream.write("revision=" + data["signer_revision"] + "\n")
+      - name: Download only manifest-authorized final files
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_ID: ${{ inputs.signed_release_id }}
+        shell: python
+        run: |
+          import json, os, pathlib, re, subprocess
+          repository = os.environ['GITHUB_REPOSITORY']
+          release_id = os.environ['RELEASE_ID']
+          release = json.loads(subprocess.check_output(['gh', 'api', f'repos/{repository}/releases/{release_id}']))
+          data = json.loads(pathlib.Path('signed-release/release-signing.json').read_text())
+          assert len(data['files']) <= 1000
+          for item in data['files']:
+              name = item['name']
+              assert re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._+-]{0,239}', name)
+              subprocess.run(['gh', 'release', 'download', release['tag_name'], '--repo', repository, '--dir', 'signed-release', '--pattern', name], check=True)
+      - name: Verify every final release file
+        env:
+          RELEASE_ID: ${{ inputs.signed_release_id }}
+          SIGNING_SESSION: ${{ inputs.signing_session }}
+        shell: python
+        run: |
+          import pathlib, json, os, re, hashlib
+          Path = pathlib.Path
+          Refused = RuntimeError
+          REPOSITORIES = {'llama': 'fael-ai-org/llama-cpp-py-sync', 'python': 'fael-ai-org/python-builds'}
+          def safe_name(value: str) -> str:
+              if (not isinstance(value, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._+-]{0,219}", value)
+                      or value in {".", ".."} or value.endswith(".")):
+                  raise Refused("Invalid release asset name")
+              return value
+
+          def digest(path: Path) -> str:
+              result = hashlib.sha256()
+              with path.open("rb") as stream:
+                  for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                      result.update(chunk)
+              return result.hexdigest()
+
+          def verify_files(root: Path, manifest: dict, repository: str, release_id: int, session: str):
+              if (repository not in REPOSITORIES.values() or manifest.get("repository") != repository
+                      or manifest.get("release_id") != release_id or manifest.get("session") != session
+                      or not re.fullmatch(r"[0-9a-f]{40}", manifest.get("signer_revision", ""))):
+                  raise Refused("Release manifest is for a different release or coordinator revision")
+              expected = {safe_name(item["name"]): item for item in manifest["files"]}
+              if len(expected) != len(manifest["files"]):
+                  raise Refused("Release manifest contains duplicate output names")
+              actual = {path.name for path in root.iterdir() if path.is_file()}
+              if actual != set(expected) | {"release-signing.json", "release-signing.sig.json"}:
+                  raise Refused("Release contains unlisted, missing or partially replaced files")
+              for name, item in expected.items():
+                  path = root / name
+                  if path.is_symlink() or digest(path) != item["sha256"] or path.stat().st_size != item["size"]:
+                      raise Refused("Final release file differs from its signed manifest")
+              return expected
+
+          verify_files(pathlib.Path('signed-release'), json.loads(pathlib.Path('signed-release/release-signing.json').read_text()), os.environ['GITHUB_REPOSITORY'], int(os.environ['RELEASE_ID']), os.environ['SIGNING_SESSION'])
+
+      - name: Attest locally signed release files
+        uses: actions/attest@v4
+        with:
+          subject-path: signed-release/*

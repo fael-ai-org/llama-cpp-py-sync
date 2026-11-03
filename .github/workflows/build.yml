@@ -1737,14 +1737,8 @@ jobs:
       - name: Download selected draft assets
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GH_REPO: ${{ github.repository }}
           RELEASE_ID: ${{ inputs.signed_release_id }}
-        run: |
-          set -euo pipefail
-          [[ "$RELEASE_ID" =~ ^[0-9]+$ ]]
-          TAG="$(gh api "repos/$GH_REPO/releases/$RELEASE_ID" --jq 'select(.draft == true and .immutable != true) | .tag_name')"
-          test -n "$TAG"
-          gh release download "$TAG" --repo "$GH_REPO" --dir signed-release --pattern release-signing.json --pattern release-signing.sig.json
+        run: python scripts/release_asset_download.py metadata
       - name: Authenticate local signing manifest
         id: authenticated
         env:
@@ -1778,18 +1772,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RELEASE_ID: ${{ inputs.signed_release_id }}
-        shell: python
-        run: |
-          import json, os, pathlib, re, subprocess
-          repository = os.environ['GITHUB_REPOSITORY']
-          release_id = os.environ['RELEASE_ID']
-          release = json.loads(subprocess.check_output(['gh', 'api', f'repos/{repository}/releases/{release_id}']))
-          data = json.loads(pathlib.Path('signed-release/release-signing.json').read_text())
-          assert len(data['files']) <= 1000
-          for item in data['files']:
-              name = item['name']
-              assert re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._+-]{0,239}', name)
-              subprocess.run(['gh', 'release', 'download', release['tag_name'], '--repo', repository, '--dir', 'signed-release', '--pattern', name], check=True)
+        run: python scripts/release_asset_download.py files
       - name: Verify every final release file
         env:
           RELEASE_ID: ${{ inputs.signed_release_id }}

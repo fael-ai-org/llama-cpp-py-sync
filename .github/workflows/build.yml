@@ -1726,7 +1726,7 @@ jobs:
     if: github.event_name == 'workflow_dispatch' && inputs.signed_release_id != ''
     runs-on: ubuntu-latest
     permissions:
-      contents: read
+      contents: write
       id-token: write
       attestations: write
     steps:

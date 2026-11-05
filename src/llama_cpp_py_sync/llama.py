@@ -1282,6 +1282,7 @@ class Llama:
         cancel_callback: Callable[[], bool] | None = None,
         cache_key: str | None = None,
         on_stats: Callable[[dict[str, Any]], None] | None = None,
+        prompt_transform: Callable[[str], str] | None = None,
     ) -> dict[str, Any] | Iterator[dict[str, Any]]:
         """Create a chat completion with ordered text/image content parts.
 
@@ -1293,6 +1294,9 @@ class Llama:
         reuse. Omit it for an independent request. Calls must be serialized;
         changing the key or any intervening non-chat inference invalidates reuse.
         ``on_stats`` receives timings and token counts, never prompt content.
+        ``prompt_transform`` lets a trusted caller apply its model-family prompt
+        policy after the native chat template and before tokenization. The final
+        transformed tokens own context sizing and live-prefix reuse.
         """
         generation_grammar, generation_grammar_root = resolve_grammar(
             grammar, grammar_root, response_format
@@ -1303,6 +1307,8 @@ class Llama:
             raise ValueError("cache_key must be a nonempty string or None")
         if cache_key is not None and multimodal_context is not None:
             raise ValueError("Live prefix reuse supports text chat only")
+        if prompt_transform is not None and (not callable(prompt_transform) or multimodal_context is not None):
+            raise ValueError("Prompt transforms require a callable and text chat")
 
         def _run() -> Iterator[str]:
             started = time.perf_counter()
@@ -1311,6 +1317,10 @@ class Llama:
                                      "prefill_seconds": None, "completed": False}
             try:
                 prompt, images = self._format_chat_prompt(messages, multimodal_context)
+                if prompt_transform is not None:
+                    prompt = prompt_transform(prompt)
+                    if not isinstance(prompt, str) or not prompt:
+                        raise ValueError("Prompt transform must return nonempty text")
                 self._set_abort_callback(cancel_callback)
                 if multimodal_context is None:
                     tokens = self.tokenize(prompt, add_special=True)

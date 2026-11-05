@@ -63,6 +63,27 @@ def test_append_only_reuses_decoded_output_and_prefills_only_suffix():
     assert 'prompt' not in stats[-1]
 
 
+def test_prompt_transform_is_counted_before_prefill_and_reuses_transformed_prefix():
+    model, events = model_fixture()
+    stats = []
+    transform = lambda text: 'policy:' + text
+    complete(model, 'abc', prompt_transform=transform)
+    assert ('eval', list(b'policy:abc'), 0) in events
+    events.clear()
+    complete(model, 'abcx more', prompt_transform=transform, on_stats=stats.append)
+    assert ('eval', list(b' more'), len('policy:abcx')) in events
+    assert stats[-1]['reused_tokens'] == len('policy:abcx')
+    assert 'clear' not in events
+
+
+@pytest.mark.parametrize('transform', [lambda _: '', lambda _: None])
+def test_invalid_transformed_prompts_fail_before_native_evaluation(transform):
+    model, events = model_fixture()
+    with pytest.raises(ValueError):
+        complete(model, 'abc', prompt_transform=transform)
+    assert not any(isinstance(event, tuple) and event[0] == 'eval' for event in events)
+
+
 @pytest.mark.parametrize('key', [None, 'another'])
 def test_helpers_and_session_changes_clear_native_memory(key):
     model, events = model_fixture()

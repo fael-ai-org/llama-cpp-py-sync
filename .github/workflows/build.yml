@@ -130,7 +130,7 @@ jobs:
                   UPSTREAM_SHA=$(git ls-remote ${{ env.LLAMA_CPP_REPO }} HEAD | cut -f1)
                 fi
               else
-                # Local-only tag; don't publish a Release/PyPI for it.
+                # Local-only tag; don't create a release for it.
                 UPSTREAM_SHA=$(git ls-remote ${{ env.LLAMA_CPP_REPO }} HEAD | cut -f1)
               fi
             fi
@@ -1685,24 +1685,6 @@ jobs:
           pattern: wheel-*
           merge-multiple: true
 
-      - name: Download CPU-only wheels (for PyPI)
-        # The sync workflow dispatches this workflow for mirrored tags because
-        # GITHUB_TOKEN-created tag pushes do not trigger another workflow.
-        if: startsWith(github.ref, 'refs/tags/') && needs.check-upstream.outputs.build_target == 'all'
-        uses: actions/download-artifact@v4
-        with:
-          path: dist_pypi
-          pattern: wheel-*-cpu
-          merge-multiple: true
-
-      - name: Download macOS Metal wheels (for PyPI)
-        if: startsWith(github.ref, 'refs/tags/') && needs.check-upstream.outputs.build_target == 'all'
-        uses: actions/download-artifact@v4
-        with:
-          path: dist_pypi
-          pattern: wheel-macos-arm64-metal
-          merge-multiple: true
-      
       - name: Create Release
         uses: softprops/action-gh-release@v3
         if: needs.check-upstream.outputs.upstream_tag_exists == 'true'
@@ -1720,7 +1702,7 @@ jobs:
             - Tag page: https://github.com/ggml-org/llama.cpp/tree/${{ needs.check-upstream.outputs.upstream_tag }}
           generate_release_notes: true
       
-      # Signed PyPI publication is an independent operator action; candidates stay in drafts.
+      # Distribution is GitHub-only; candidates stay in drafts for local signing.
 
   attest-signed-release:
     if: github.event_name == 'workflow_dispatch' && inputs.signed_release_id != ''

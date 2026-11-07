@@ -5,7 +5,6 @@
 [![Build Wheels](https://github.com/FarisZahrani/llama-cpp-py-sync/actions/workflows/build.yml/badge.svg)](https://github.com/FarisZahrani/llama-cpp-py-sync/actions/workflows/build.yml)
 [![Sync Upstream](https://github.com/FarisZahrani/llama-cpp-py-sync/actions/workflows/sync.yml/badge.svg)](https://github.com/FarisZahrani/llama-cpp-py-sync/actions/workflows/sync.yml)
 [![Tests](https://github.com/FarisZahrani/llama-cpp-py-sync/actions/workflows/test.yml/badge.svg)](https://github.com/FarisZahrani/llama-cpp-py-sync/actions/workflows/test.yml)
-[![PyPI version](https://img.shields.io/pypi/v/llama-cpp-py-sync.svg)](https://pypi.org/project/llama-cpp-py-sync/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 ## Overview
@@ -16,7 +15,7 @@
 
 - Automatic upstream sync and binding regeneration
 - Prebuilt wheels built by CI
-- CPU wheels published to PyPI
+- GitHub-only wheel distribution, including CPU builds
 - Backend-specific wheels published to GitHub Releases: one broad CUDA 12.8 wheel per Linux/Windows platform, Linux and Windows Vulkan, macOS Apple Silicon Metal, and macOS Intel Vulkan (MoltenVK)
 - CI checks that the generated CFFI surface matches the upstream C API (functions, structs, enums, and signatures)
 - A small, explicit Python API (`Llama.generate`, `tokenize`, `get_embeddings`, etc.)
@@ -56,19 +55,23 @@ print(ffi.string(lib.llama_print_system_info()).decode("utf-8", errors="replace"
 
 This project supports **Python 3.8 through 3.14**. CI builds wheels with **Python 3.13.13** for reproducibility; the published wheels are intended to work across supported Python versions.
 
-### From PyPI (Recommended)
+### From GitHub Releases (Recommended)
+
+Download the wheel for your platform and backend from
+[GitHub Releases](https://github.com/fael-ai-org/llama-cpp-py-sync/releases)
+and install the downloaded `.whl`:
 
 ```bash
-pip install llama-cpp-py-sync
+pip install path/to/downloaded-wheel.whl
 ```
 
-This installs the **CPU** wheel.
-
-Note: depending on CI configuration and platform support, additional wheels may also be published to PyPI.
+New builds are prepared as drafts for local signing and verification before
+publication. New versions are distributed through GitHub Releases only;
+previously published PyPI versions are no longer updated.
 
 ### Quick Chat (Recommended)
 
-After installing from PyPI, you can start an interactive chat session with:
+After installing the downloaded wheel, you can start an interactive chat session with:
 
 ```bash
 python -m llama_cpp_py_sync chat
@@ -88,14 +91,6 @@ Use a specific local model:
 
 ```bash
 python -m llama_cpp_py_sync chat --model path/to/model.gguf
-```
-
-### From GitHub Releases (Wheel)
-
-Download the wheel for your platform/backend from GitHub Releases and install the `.whl`:
-
-```bash
-pip install path/to/llama_cpp_py_sync-*.whl
 ```
 
 ### From Source
@@ -420,8 +415,8 @@ llama.is_blas_available()
 1. **Scheduled Checks**: GitHub Actions checks upstream llama.cpp on a schedule
 2. **Tag Mirroring**: When an upstream tag exists, the workflow can mirror it into this repository
 3. **Wheel Building**: CI builds wheels for all platforms/backends
-4. **Release Publishing**: GitHub Releases are created only for tags that exist upstream
-5. **PyPI Publishing**: CPU-only wheels are published to PyPI for upstream tags (if configured)
+4. **Draft Releases**: GitHub draft releases are created only for tags that exist upstream
+5. **Release Publishing**: Locally signed and verified wheels are published through GitHub Releases only; CI does not publish them directly
 
 ### Bindings Validation (API Surface)
 

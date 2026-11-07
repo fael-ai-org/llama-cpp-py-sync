@@ -30,17 +30,17 @@ def test_manual_build_targets_are_selectable_and_publishable():
     assert "if: always() && !failure() && !cancelled()" in workflow
 
 
-def test_partial_rebuilds_do_not_publish_to_pypi():
+def test_all_workflows_distribute_through_github_only():
+    for path in WORKFLOW.parent.glob("*.yml"):
+        content = path.read_text(encoding="utf-8").lower()
+        for forbidden in ("pypi", "twine", "pypa/gh-action-pypi-publish", "uv publish"):
+            assert forbidden not in content, f"{path.name} contains {forbidden}"
+
     workflow = WORKFLOW.read_text(encoding="utf-8")
-    assert "twine upload" not in workflow
     assert "draft: true" in workflow
     assert "make_latest: false" in workflow
-
-    pypi_artifact_condition = (
-        "if: startsWith(github.ref, 'refs/tags/') && "
-        "needs.check-upstream.outputs.build_target == 'all'"
-    )
-    assert workflow.count(pypi_artifact_condition) == 2
+    assert "name: Download all wheels" in workflow
+    assert "pattern: wheel-*" in workflow
 
 
 def test_release_assets_exclude_ci_test_signing_files():

@@ -38,10 +38,10 @@ index e9af71228..72a542816 100644
 +        sock = std::move(stream);
 +    } else {
      std::string host;
-@@ -624,2 +627,3 @@ void rpc_dispatcher::start(const std::string & endpoint) {
-     }
+@@ -621,2 +624,3 @@ void rpc_dispatcher::start(const std::string & endpoint) {
+     sock = socket_t::connect(host.c_str(), port);
 +    }
-     if (!negotiate_hello(sock)) {
+     if (sock == nullptr) {
 @@ -664,3 +668,2 @@ rpc_dispatcher::~rpc_dispatcher() {
      queue.interrupt();
 -    sock = nullptr;

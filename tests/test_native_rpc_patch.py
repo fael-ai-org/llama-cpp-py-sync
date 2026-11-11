@@ -36,7 +36,8 @@ def test_binding_regeneration_retains_stream_layout_and_rpc_limits():
     assert "#define GGML_RPC_MAX_SERVERS" in generated
 
 
-def test_native_patch_applies_once_and_rejects_conflicting_sources(tmp_path):
+@pytest.mark.parametrize("handshake_flags", [False, True])
+def test_native_patch_applies_once_and_rejects_conflicting_sources(tmp_path, handshake_flags):
     root = Path(__file__).resolve().parents[1]
     vendor = root / "vendor/llama.cpp"
     if not (vendor / ".git").exists():
@@ -47,7 +48,16 @@ def test_native_patch_applies_once_and_rejects_conflicting_sources(tmp_path):
         target = tmp_path / path
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(subprocess.check_output(["git", "show", "HEAD:" + path], cwd=vendor))
+    rpc_source = tmp_path / paths[-1]
+    source = rpc_source.read_text(encoding="utf-8")
+    if handshake_flags:
+        source = source.replace("negotiate_hello(sock)", "negotiate_hello(sock, flags)")
+    else:
+        source = source.replace("negotiate_hello(sock, flags)", "negotiate_hello(sock)")
+    rpc_source.write_text(source, encoding="utf-8")
     apply(tmp_path)
+    expected_handshake = "negotiate_hello(sock, flags)" if handshake_flags else "negotiate_hello(sock)"
+    assert expected_handshake in rpc_source.read_text(encoding="utf-8")
     after = {path: (tmp_path / path).read_bytes() for path in paths}
     apply(tmp_path)
     assert {path: (tmp_path / path).read_bytes() for path in paths} == after

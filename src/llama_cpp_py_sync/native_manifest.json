@@ -1,5 +1,5 @@
 {
-  "llama_cpp_commit": "a01dff908b9c9311d7af316bba3c918063749bd0",
+  "llama_cpp_commit": "9e9619d030bbe6b584d826a0a6cf06e38251f52b",
   "mtmd_abi": "tools/mtmd/mtmd.h and tools/mtmd/mtmd-helper.h C API",
   "libraries": {
     "core": "libllama",
@@ -46,7 +46,7 @@
   "native_patches": [
     {
       "name": "rpc-stream",
-      "sha256": "5d1e0e56dcd115e31461d88ab26ca9e706d7f16d0c6348d7136500a582b52f08"
+      "sha256": "7f1d3a04014e38dc5ac69cce339aba21f9438a6516548d7f67682cba4b4db5b6"
     }
   ]
 }

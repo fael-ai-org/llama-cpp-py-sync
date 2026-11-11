@@ -37,7 +37,8 @@ def test_binding_regeneration_retains_stream_layout_and_rpc_limits():
 
 
 @pytest.mark.parametrize("handshake_flags", [False, True])
-def test_native_patch_applies_once_and_rejects_conflicting_sources(tmp_path, handshake_flags):
+@pytest.mark.parametrize("fallible_start", [False, True])
+def test_native_patch_applies_once_and_rejects_conflicting_sources(tmp_path, handshake_flags, fallible_start):
     root = Path(__file__).resolve().parents[1]
     vendor = root / "vendor/llama.cpp"
     if not (vendor / ".git").exists():
@@ -54,10 +55,20 @@ def test_native_patch_applies_once_and_rejects_conflicting_sources(tmp_path, han
         source = source.replace("negotiate_hello(sock)", "negotiate_hello(sock, flags)")
     else:
         source = source.replace("negotiate_hello(sock, flags)", "negotiate_hello(sock)")
+    if fallible_start:
+        source = source.replace("void start(", "bool start(")
+        source = source.replace("void rpc_dispatcher::start(", "bool rpc_dispatcher::start(")
+    else:
+        source = source.replace("bool start(", "void start(")
+        source = source.replace("bool rpc_dispatcher::start(", "void rpc_dispatcher::start(")
     rpc_source.write_text(source, encoding="utf-8")
     apply(tmp_path)
     expected_handshake = "negotiate_hello(sock, flags)" if handshake_flags else "negotiate_hello(sock)"
     assert expected_handshake in rpc_source.read_text(encoding="utf-8")
+    if fallible_start:
+        patched = rpc_source.read_text(encoding="utf-8")
+        assert "if (!dispatcher->start(endpoint, sock))" in patched
+        assert "stream_names.erase(endpoint);" in patched
     after = {path: (tmp_path / path).read_bytes() for path in paths}
     apply(tmp_path)
     assert {path: (tmp_path / path).read_bytes() for path in paths} == after

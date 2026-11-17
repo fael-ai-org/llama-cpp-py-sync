@@ -1307,8 +1307,8 @@ class Llama:
             raise ValueError("cache_key must be a nonempty string or None")
         if cache_key is not None and multimodal_context is not None:
             raise ValueError("Live prefix reuse supports text chat only")
-        if prompt_transform is not None and (not callable(prompt_transform) or multimodal_context is not None):
-            raise ValueError("Prompt transforms require a callable and text chat")
+        if prompt_transform is not None and not callable(prompt_transform):
+            raise ValueError("Prompt transforms require a callable")
 
         def _run() -> Iterator[str]:
             started = time.perf_counter()
@@ -1318,9 +1318,14 @@ class Llama:
             try:
                 prompt, images = self._format_chat_prompt(messages, multimodal_context)
                 if prompt_transform is not None:
-                    prompt = prompt_transform(prompt)
-                    if not isinstance(prompt, str) or not prompt:
+                    transformed = prompt_transform(prompt)
+                    if not isinstance(transformed, str) or not transformed:
                         raise ValueError("Prompt transform must return nonempty text")
+                    if multimodal_context is not None:
+                        marker = multimodal_context.marker
+                        if not marker or transformed.count(marker) != prompt.count(marker):
+                            raise ValueError("Prompt transform must preserve image markers")
+                    prompt = transformed
                 self._set_abort_callback(cancel_callback)
                 if multimodal_context is None:
                     tokens = self.tokenize(prompt, add_special=True)

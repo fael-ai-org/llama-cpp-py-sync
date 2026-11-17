@@ -1,5 +1,6 @@
 """Live prefix lifecycle tests without loading a native model."""
 import gc
+from contextlib import nullcontext
 from types import GeneratorType, SimpleNamespace
 
 import pytest
@@ -82,6 +83,34 @@ def test_invalid_transformed_prompts_fail_before_native_evaluation(transform):
     with pytest.raises(ValueError):
         complete(model, 'abc', prompt_transform=transform)
     assert not any(isinstance(event, tuple) and event[0] == 'eval' for event in events)
+
+
+def test_multimodal_prompt_policy_is_applied_before_image_tokenization():
+    model, events = model_fixture()
+    images = [('image/png', b'fixture')]
+    model._format_chat_prompt = lambda *_: ('<media> question\n<think>', images)
+    observed = []
+    def tokenize(prompt, supplied_images, **_):
+        observed.append((prompt, supplied_images))
+        return nullcontext('tokens')
+    context = SimpleNamespace(model=model, marker='<media>', tokenize_prompt=tokenize,
+                              evaluate_prompt=lambda *a, **kw: 12)
+    answer = complete(model, 'unused', key=None, multimodal_context=context,
+                      prompt_transform=lambda text: text + '\n</think>')
+    assert answer['choices'][0]['message']['content'] == 'x'
+    assert observed == [('<media> question\n<think>\n</think>', images)]
+    assert 'clear' in events
+    assert model._chat_cache_key is None
+
+
+@pytest.mark.parametrize('transform', [lambda _: 'no image', lambda text: text + '<media>'])
+def test_multimodal_prompt_policy_cannot_drop_or_duplicate_image_markers(transform):
+    model, events = model_fixture()
+    model._format_chat_prompt = lambda *_: ('<media> question', [('image/png', b'fixture')])
+    context = SimpleNamespace(model=model, marker='<media>')
+    with pytest.raises(ValueError, match='preserve image markers'):
+        complete(model, 'unused', key=None, multimodal_context=context, prompt_transform=transform)
+    assert 'sampler' not in events
 
 
 @pytest.mark.parametrize('key', [None, 'another'])

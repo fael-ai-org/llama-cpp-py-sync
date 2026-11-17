@@ -746,15 +746,21 @@ class MultimodalContext:
             input_text.parse_special = bool(parse_special)
             bitmap_array = self._ffi.new("const mtmd_bitmap *[]", len(bitmaps))
             for index, bitmap in enumerate(bitmaps):
+                self._lib.mtmd_bitmap_set_id(bitmap, f"image-{index}".encode("ascii"))
                 bitmap_array[index] = bitmap
             result = self._lib.mtmd_tokenize(
                 self._ctx, chunks, input_text, bitmap_array, len(bitmaps)
             )
             if result != 0:
                 raise MultimodalError(f"mtmd tokenization failed with code {int(result)}")
-            image_chunks = sum(1 for chunk in _iter_chunk_pointers(self, chunks) if _chunk_type(self, chunk) == 1)
-            if image_chunks != len(bitmaps):
-                raise MultimodalError("mtmd did not preserve every supplied image in the prompt")
+            image_ids = []
+            for chunk in _iter_chunk_pointers(self, chunks):
+                if _chunk_type(self, chunk) == 1:
+                    identifier = self._lib.mtmd_input_chunk_get_id(chunk)
+                    image_ids.append(None if identifier == self._ffi.NULL else self._ffi.string(identifier))
+            _validate_image_chunk_ids(
+                [f"image-{index}".encode("ascii") for index in range(len(bitmaps))], image_ids
+            )
             prompt = MultimodalPrompt(self, chunks, bitmaps)
             chunks = self._ffi.NULL
             bitmaps = []
@@ -854,6 +860,17 @@ class MultimodalContext:
             self.close()
         except Exception:
             pass
+
+
+def _validate_image_chunk_ids(expected: Sequence[bytes], observed: Sequence[bytes | None]) -> None:
+    # One image can yield overview and crop chunks. Upstream preserves the
+    # bitmap ID on every crop; collapse only adjacent crops of the same image.
+    ordered = []
+    for identifier in observed:
+        if not ordered or ordered[-1] != identifier:
+            ordered.append(identifier)
+    if ordered != list(expected):
+        raise MultimodalError("mtmd did not preserve every supplied image in order")
 
 
 def _iter_chunk_pointers(context: MultimodalContext, chunks: Any) -> Iterable[Any]:

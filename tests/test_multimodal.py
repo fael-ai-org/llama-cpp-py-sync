@@ -10,11 +10,31 @@ from llama_cpp_py_sync.multimodal import (
     _decode_data_url,
     _normalise_content,
     _validate_image,
+    _validate_image_chunk_ids,
 )
 
 PNG_1X1 = base64.b64decode(
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
 )
+
+
+def test_multiple_crops_preserve_each_image_identity_in_order():
+    _validate_image_chunk_ids([b"image-0", b"image-1"],
+                              [b"image-0", b"image-0", b"image-1", b"image-1"])
+    _validate_image_chunk_ids([], [])
+
+
+@pytest.mark.parametrize("observed", [
+    [b"image-0", b"image-0"],
+    [b"image-1", b"image-0"],
+    [b"image-0", b"image-1", b"image-0"],
+    [b"image-0", None, b"image-1"],
+    [b"image-0", b"unknown", b"image-1"],
+])
+def test_missing_reordered_or_unidentified_images_are_rejected(observed):
+    from llama_cpp_py_sync.multimodal import MultimodalError
+    with pytest.raises(MultimodalError, match="preserve every supplied image in order"):
+        _validate_image_chunk_ids([b"image-0", b"image-1"], observed)
 
 
 def test_mtmd_cffi_types_are_present():

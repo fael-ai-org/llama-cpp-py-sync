@@ -36,13 +36,24 @@ def test_binding_regeneration_retains_stream_layout_and_rpc_limits():
     assert "#define GGML_RPC_MAX_SERVERS" in generated
 
 
+@pytest.mark.parametrize("patch_crlf", [False, True])
 @pytest.mark.parametrize("handshake_flags", [False, True])
 @pytest.mark.parametrize("fallible_start", [False, True])
-def test_native_patch_applies_once_and_rejects_conflicting_sources(tmp_path, handshake_flags, fallible_start):
+def test_native_patch_applies_once_and_rejects_conflicting_sources(
+    tmp_path, monkeypatch, handshake_flags, fallible_start, patch_crlf
+):
     root = Path(__file__).resolve().parents[1]
     vendor = root / "vendor/llama.cpp"
     if not (vendor / ".git").exists():
         pytest.skip("Vendored Git source required for patch acceptance")
+    if patch_crlf:
+        original_read = Path.read_bytes
+        def read_patch(path):
+            data = original_read(path)
+            if path.name == "rpc-stream.patch":
+                return data.replace(b"\r\n", b"\n").replace(b"\n", b"\r\n")
+            return data
+        monkeypatch.setattr(Path, "read_bytes", read_patch)
     paths = ["ggml/include/ggml-rpc.h", "ggml/src/ggml-rpc/transport.h",
         "ggml/src/ggml-rpc/transport.cpp", "ggml/src/ggml-rpc/ggml-rpc.cpp"]
     for path in paths:
@@ -61,7 +72,7 @@ def test_native_patch_applies_once_and_rejects_conflicting_sources(tmp_path, han
     else:
         source = source.replace("bool start(", "void start(")
         source = source.replace("bool rpc_dispatcher::start(", "void rpc_dispatcher::start(")
-    rpc_source.write_text(source, encoding="utf-8")
+    rpc_source.write_bytes(source.encode("utf-8"))
     apply(tmp_path)
     expected_handshake = "negotiate_hello(sock, flags)" if handshake_flags else "negotiate_hello(sock)"
     assert expected_handshake in rpc_source.read_text(encoding="utf-8")
@@ -73,7 +84,7 @@ def test_native_patch_applies_once_and_rejects_conflicting_sources(tmp_path, han
     apply(tmp_path)
     assert {path: (tmp_path / path).read_bytes() for path in paths} == after
     header = tmp_path / paths[0]
-    header.write_text(header.read_text().replace("ggml_rpc_stream", "conflicting_rpc_stream"))
+    header.write_bytes(header.read_text().replace("ggml_rpc_stream", "conflicting_rpc_stream").encode("utf-8"))
     with pytest.raises(subprocess.CalledProcessError):
         apply(tmp_path)
 

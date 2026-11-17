@@ -1,5 +1,7 @@
 from pathlib import Path
 
+import pytest
+
 from scripts.build_llama_cpp import (
     _codesign_macos_package_dylibs,
     _copy_linux_dependency_sos,
@@ -7,6 +9,15 @@ from scripts.build_llama_cpp import (
     _preferred_linux_library_name,
     get_cmake_args,
 )
+
+
+def _runtime_symlink(link: Path, target: str) -> None:
+    try:
+        link.symlink_to(target)
+    except OSError as error:
+        if getattr(error, "winerror", None) == 1314:
+            pytest.skip("Windows session lacks symlink creation privilege; run on Linux or privileged Windows")
+        raise
 
 
 def test_all_wheel_builds_disable_native_cpu_optimization(monkeypatch) -> None:
@@ -77,7 +88,7 @@ def test_linux_runtime_symlink_is_materialized_once_under_soname(tmp_path) -> No
     versioned = source_dir / "libcublas.so.12.8.5.5"
     versioned.write_bytes(b"cuda-library")
     soname = source_dir / "libcublas.so.12"
-    soname.symlink_to(versioned.name)
+    _runtime_symlink(soname, versioned.name)
 
     assert _copy_linux_runtime_so(soname, package_dir, runtime_name="libcublas.so.12")
 
@@ -105,13 +116,13 @@ def test_linux_build_aliases_produce_one_soname_copy(tmp_path, monkeypatch) -> N
 
     llama = build_dir / "libllama.so"
     llama.write_bytes(b"llama")
-    (build_dir / "libllama.so.0").symlink_to(llama.name)
-    (build_dir / "libllama.so.0.0.1").symlink_to(llama.name)
+    _runtime_symlink(build_dir / "libllama.so.0", llama.name)
+    _runtime_symlink(build_dir / "libllama.so.0.0.1", llama.name)
 
     cuda = build_dir / "libggml-cuda.so.0.19.0"
     cuda.write_bytes(b"large-cuda-library")
-    (build_dir / "libggml-cuda.so.0").symlink_to(cuda.name)
-    (build_dir / "libggml-cuda.so").symlink_to("libggml-cuda.so.0")
+    _runtime_symlink(build_dir / "libggml-cuda.so.0", cuda.name)
+    _runtime_symlink(build_dir / "libggml-cuda.so", "libggml-cuda.so.0")
 
     sonames = {
         llama.resolve(): "libllama.so.0",

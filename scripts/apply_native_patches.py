@@ -6,7 +6,9 @@ from pathlib import Path
 
 def apply(vendor_path: Path):
     patch = Path(__file__).resolve().parent.parent / "patches" / "rpc-stream.patch"
-    contents = patch.read_bytes()
+    # Git checkouts/archives may convert patch text to CRLF on Windows.
+    # Keep inserted hunks and upstream context in one canonical line format.
+    contents = patch.read_bytes().replace(b"\r\n", b"\n")
     source = (vendor_path / "ggml/src/ggml-rpc/ggml-rpc.cpp")
     if source.is_file() and "bool rpc_dispatcher::start(" in source.read_text(encoding="utf-8"):
         # Upstream made startup fallible. Keep its return value and avoid

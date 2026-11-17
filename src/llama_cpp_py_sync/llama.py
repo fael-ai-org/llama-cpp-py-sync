@@ -328,11 +328,7 @@ class Llama:
         if self._verbose:
             print(f"Loading model from {model_path}...")
 
-        if hasattr(self._lib, "llama_model_load_from_file"):
-            load_model = self._lib.llama_model_load_from_file
-        else:
-            load_model = self._lib.llama_load_model_from_file
-        self._model = load_model(
+        self._model = self._lib.llama_model_load_from_file(
             model_path.encode("utf-8"),
             model_params,
         )
@@ -381,18 +377,10 @@ class Llama:
         if seed != -1:
             pass
 
-        if hasattr(self._lib, "llama_init_from_model"):
-            init_ctx = self._lib.llama_init_from_model
-        else:
-            init_ctx = self._lib.llama_new_context_with_model
-        self._ctx = init_ctx(self._model, ctx_params)
+        self._ctx = self._lib.llama_init_from_model(self._model, ctx_params)
 
         if self._ctx == self._ffi.NULL:
-            if hasattr(self._lib, "llama_model_free"):
-                free_model = self._lib.llama_model_free
-            else:
-                free_model = self._lib.llama_free_model
-            free_model(self._model)
+            self._lib.llama_model_free(self._model)
             raise RuntimeError("Failed to create model context")
 
         get_vocab = getattr(self._lib, "llama_model_get_vocab", None)
@@ -472,11 +460,7 @@ class Llama:
             self._lib.llama_free(self._ctx)
             self._ctx = None
         if hasattr(self, "_model") and self._model is not None:
-            if hasattr(self._lib, "llama_model_free"):
-                free_model = self._lib.llama_model_free
-            else:
-                free_model = self._lib.llama_free_model
-            free_model(self._model)
+            self._lib.llama_model_free(self._model)
             self._model = None
 
     def __enter__(self):
@@ -506,7 +490,7 @@ class Llama:
     @property
     def n_embd(self) -> int:
         """Get embedding dimension."""
-        return self._lib.llama_n_embd(self._model)
+        return self._lib.llama_model_n_embd(self._model)
 
     @property
     def n_embd_out(self) -> int:
@@ -712,7 +696,7 @@ class Llama:
     @property
     def n_layer(self) -> int:
         """Get number of layers."""
-        return self._lib.llama_n_layer(self._model)
+        return self._lib.llama_model_n_layer(self._model)
 
     @property
     def bos_token(self) -> int:

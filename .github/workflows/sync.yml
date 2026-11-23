@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       upstream_tag:
-        description: 'Exact upstream tag to sync (for example v1.0.0); leave empty to select the newest tag'
+        description: 'Exact upstream tag to sync (for example v1.0.0); leave empty to select the latest published stable version release'
         required: false
         default: ''
         type: string
@@ -53,8 +53,8 @@ jobs:
         run: |
           set -euo pipefail
 
-          # Fetch upstream tags into a dedicated namespace so we can select the newest by date.
-          # This avoids string-sorting pitfalls (e.g. tags like "master-<sha>" sorting after "b7744").
+          # Fetch upstream tags into a dedicated namespace; release tags must resolve to
+          # validated wrapper commits and must not occupy the upstream tag namespace.
           git remote remove upstream >/dev/null 2>&1 || true
           git remote add upstream ${{ env.LLAMA_CPP_REPO }}
           # Disable automatic tag following: only the namespaced upstream refs
@@ -72,7 +72,18 @@ jobs:
               exit 1
             fi
           else
-            LATEST_UPSTREAM_TAG_REF=$(git for-each-ref --sort=-creatordate --count=1 --format='%(refname)' refs/tags/_upstream)
+            LATEST_RELEASE_JSON=$(curl --fail-with-body --retry 3 --retry-delay 2 \
+              --silent --show-error \
+              --header "Accept: application/vnd.github+json" \
+              --header "X-GitHub-Api-Version: 2022-11-28" \
+              https://api.github.com/repos/ggml-org/llama.cpp/releases/latest)
+            LATEST_UPSTREAM_TAG=$(printf '%s' "${LATEST_RELEASE_JSON}" | python scripts/resolve_upstream_release.py)
+            LATEST_UPSTREAM_TAG_REF="refs/tags/_upstream/${LATEST_UPSTREAM_TAG}"
+            echo "Selected latest published upstream version release: ${LATEST_UPSTREAM_TAG}"
+            if ! git show-ref --verify --quiet "${LATEST_UPSTREAM_TAG_REF}"; then
+              echo "Published release tag is missing from fetched upstream refs: ${LATEST_UPSTREAM_TAG}" >&2
+              exit 1
+            fi
           fi
           if [ -z "${LATEST_UPSTREAM_TAG_REF}" ]; then
             echo "No upstream tag found; skipping."

@@ -9,6 +9,7 @@ This script generates version strings based on:
 """
 
 import argparse
+import json
 import os
 import re
 import subprocess
@@ -95,7 +96,7 @@ def update_version_file(
 
 __version__ = "{version}"
 __llama_cpp_commit__ = "{llama_commit or 'unknown'}"
-__llama_cpp_tag__ = "{llama_tag or ''}"
+__llama_cpp_tag__ = {json.dumps(llama_tag or '')}
 '''
     version_file.parent.mkdir(parents=True, exist_ok=True)
     with open(version_file, "w") as f:
@@ -113,18 +114,25 @@ def main():
     parser.add_argument("--dev", action="store_true", help="Add .dev0 suffix")
     parser.add_argument("--update", action="store_true", help="Update _version.py file")
     parser.add_argument("--print", action="store_true", dest="print_version", help="Print version")
+    parser.add_argument(
+        "--upstream-tag",
+        default=None,
+        help="Use this exact llama.cpp tag when generating the package version",
+    )
     args = parser.parse_args()
 
     project_root = args.project_root or get_project_root()
 
     ref_type = os.environ.get("GITHUB_REF_TYPE")
     ref_name = os.environ.get("GITHUB_REF_NAME")
-    llama_tag = None
+    llama_tag = args.upstream_tag
 
     version = None
-    if ref_type == "tag" and ref_name:
+    if llama_tag is None and ref_type == "tag" and ref_name:
         llama_tag = ref_name
-        mapped = _version_from_upstream_tag(ref_name)
+
+    if llama_tag:
+        mapped = _version_from_upstream_tag(llama_tag)
         if mapped is not None:
             version = mapped
 

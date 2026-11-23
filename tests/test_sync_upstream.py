@@ -90,3 +90,14 @@ def test_release_is_published_and_dispatched_only_after_validated_commit():
     validation = build.split("  validate-bindings:", 1)[1].split("  build-linux-x86_64:", 1)[0]
     assert "UPSTREAM_SHA: ${{ needs.check-upstream.outputs.upstream_sha }}" in validation
     assert "state.read_text" not in validation
+
+
+def test_manual_sync_can_pin_an_exact_upstream_tag_and_preserve_its_version_name():
+    root = Path(__file__).resolve().parents[1]
+    workflow = (root / ".github/workflows/sync.yml").read_text()
+    assert "upstream_tag:" in workflow
+    assert "UPSTREAM_TAG_INPUT: ${{ github.event.inputs.upstream_tag || '' }}" in workflow
+    assert 'git check-ref-format "refs/tags/${UPSTREAM_TAG_INPUT}"' in workflow
+    assert 'git show-ref --verify --quiet "${LATEST_UPSTREAM_TAG_REF}"' in workflow
+    assert 'python scripts/auto_version.py --update --upstream-tag "${UPSTREAM_TAG}"' in workflow
+    assert 'git tag -a "${LATEST_UPSTREAM_TAG}"' in workflow

@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 from scripts import sync_upstream
-from scripts.resolve_upstream_release import resolve_release_tag
+from scripts.resolve_upstream_build_tag import resolve_latest_build_tag
 
 
 def test_upstream_annotated_tags_do_not_occupy_wrapper_release_namespace(tmp_path):
@@ -93,52 +93,35 @@ def test_release_is_published_and_dispatched_only_after_validated_commit():
     assert "state.read_text" not in validation
 
 
-def test_scheduled_sync_uses_latest_published_upstream_release_not_latest_tag():
+def test_scheduled_sync_uses_newest_numbered_upstream_build_tag():
     root = Path(__file__).resolve().parents[1]
     workflow = (root / ".github/workflows/sync.yml").read_text()
-    assert "https://api.github.com/repos/ggml-org/llama.cpp/releases/latest" in workflow
-    assert "python scripts/resolve_upstream_release.py" in workflow
-    assert "git for-each-ref --sort=-creatordate" not in workflow
-    assert "Selected latest published upstream version release" in workflow
+    assert "git for-each-ref --format='%(refname)' refs/tags/_upstream" in workflow
+    assert "python scripts/resolve_upstream_build_tag.py" in workflow
+    assert "https://api.github.com/repos/ggml-org/llama.cpp/releases/latest" not in workflow
+    assert "Selected latest upstream numbered build tag" in workflow
 
 
-def test_latest_release_resolver_accepts_published_stable_version_tag():
-    release = {
-        "tag_name": "v1.0.0",
-        "draft": False,
-        "prerelease": False,
-        "published_at": "2026-11-13T10:20:19Z",
-    }
-    assert resolve_release_tag(release) == "v1.0.0"
+def test_build_tag_resolver_uses_numeric_order_and_ignores_other_tags():
+    refs = [
+        "refs/tags/_upstream/v1.0.0",
+        "refs/tags/_upstream/b9999",
+        "refs/tags/_upstream/b12653",
+        "refs/tags/_upstream/b12655",
+        "refs/tags/_upstream/master-abcdef0",
+    ]
+    assert resolve_latest_build_tag(refs) == "b12655"
 
 
-@pytest.mark.parametrize("tag", ["b12653", "v1.0", "v1.0.0-rc.1", "v01.0.0"])
-def test_latest_release_resolver_rejects_non_stable_version_tags(tag):
-    release = {
-        "tag_name": tag,
-        "draft": False,
-        "prerelease": False,
-        "published_at": "2026-11-13T10:20:19Z",
-    }
-    with pytest.raises(ValueError, match="vMAJOR.MINOR.PATCH"):
-        resolve_release_tag(release)
+@pytest.mark.parametrize("tag", ["v1.0.0", "b12655.1", "b012655", "b12foo", "master"])
+def test_build_tag_resolver_rejects_non_numbered_build_tags(tag):
+    with pytest.raises(ValueError, match="b<number>"):
+        resolve_latest_build_tag([tag])
 
 
-@pytest.mark.parametrize(
-    "override, message",
-    [({"draft": True}, "draft"), ({"prerelease": True}, "prerelease"),
-     ({"published_at": None}, "publication timestamp")],
-)
-def test_latest_release_resolver_rejects_unpublished_or_unstable_release(override, message):
-    release = {
-        "tag_name": "v1.0.0",
-        "draft": False,
-        "prerelease": False,
-        "published_at": "2026-11-13T10:20:19Z",
-    }
-    release.update(override)
-    with pytest.raises(ValueError, match=message):
-        resolve_release_tag(release)
+def test_build_tag_resolver_rejects_ref_list_without_upstream_build_tags():
+    with pytest.raises(ValueError, match="no upstream build tags"):
+        resolve_latest_build_tag(["refs/tags/_upstream/v1.0.0", "refs/tags/_upstream/master"])
 
 
 def test_manual_sync_can_pin_an_exact_upstream_tag_and_preserve_its_version_name():

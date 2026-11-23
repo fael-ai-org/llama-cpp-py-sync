@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       upstream_tag:
-        description: 'Exact upstream tag to sync (for example v1.0.0); leave empty to select the latest published stable version release'
+        description: 'Exact upstream tag to sync (for example b12655 or v1.0.0); leave empty to select the newest numbered upstream build tag'
         required: false
         default: ''
         type: string
@@ -53,12 +53,12 @@ jobs:
         run: |
           set -euo pipefail
 
-          # Fetch upstream tags into a dedicated namespace; release tags must resolve to
-          # validated wrapper commits and must not occupy the upstream tag namespace.
+          # Fetch upstream tags into a dedicated namespace. The default selector filters
+          # this namespace to upstream numbered build tags; manual runs can pin any tag.
           git remote remove upstream >/dev/null 2>&1 || true
           git remote add upstream ${{ env.LLAMA_CPP_REPO }}
-          # Disable automatic tag following: only the namespaced upstream refs
-          # belong here. Release tags must point to validated wrapper commits.
+          # Disable automatic tag following: only these namespaced upstream refs
+          # are candidates for selection.
           git fetch --no-tags --force upstream '+refs/tags/*:refs/tags/_upstream/*'
 
           if [ -n "${UPSTREAM_TAG_INPUT}" ]; then
@@ -72,16 +72,12 @@ jobs:
               exit 1
             fi
           else
-            LATEST_RELEASE_JSON=$(curl --fail-with-body --retry 3 --retry-delay 2 \
-              --silent --show-error \
-              --header "Accept: application/vnd.github+json" \
-              --header "X-GitHub-Api-Version: 2022-11-28" \
-              https://api.github.com/repos/ggml-org/llama.cpp/releases/latest)
-            LATEST_UPSTREAM_TAG=$(printf '%s' "${LATEST_RELEASE_JSON}" | python scripts/resolve_upstream_release.py)
+            LATEST_UPSTREAM_TAG=$(git for-each-ref --format='%(refname)' refs/tags/_upstream \
+              | python scripts/resolve_upstream_build_tag.py)
             LATEST_UPSTREAM_TAG_REF="refs/tags/_upstream/${LATEST_UPSTREAM_TAG}"
-            echo "Selected latest published upstream version release: ${LATEST_UPSTREAM_TAG}"
+            echo "Selected latest upstream numbered build tag: ${LATEST_UPSTREAM_TAG}"
             if ! git show-ref --verify --quiet "${LATEST_UPSTREAM_TAG_REF}"; then
-              echo "Published release tag is missing from fetched upstream refs: ${LATEST_UPSTREAM_TAG}" >&2
+              echo "Selected upstream build tag is missing from fetched refs: ${LATEST_UPSTREAM_TAG}" >&2
               exit 1
             fi
           fi
